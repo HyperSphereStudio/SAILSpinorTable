@@ -1,0 +1,7 @@
+*.dll
+*.so
+*.obj
+SpinnerTable/Debug/**
+SpinnerTable/Release/**
+SpinnerTableCode/**
+SpinnerTableGUI/juliagui.dll
