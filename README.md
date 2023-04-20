@@ -21,5 +21,5 @@ MicroController Framework Outline
     * [LibSerialPort.jl](https://github.com/JuliaIO/LibSerialPort.jl) - IO from COM ports with UART protocol
     * BizzanoMFGUI.jl - Weave together gui libraries to design a simple framework
     * Parse COM input stream 
-    * [PackageCompiler](https://github.com/JuliaLang/PackageCompiler.jl) - Compile julia package to native for fast startup
+    * [PackageCompiler.jl](https://github.com/JuliaLang/PackageCompiler.jl) - Compile julia package to native for fast startup
     * FUTURE TD: Packet & Data Serialization Library - Provide a reliable data protocol to enable sending/recieving complex data structures to the client
