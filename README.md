@@ -15,6 +15,7 @@ MicroController Framework Outline
 
   * Bizzano MicroFramework
     * [Gtk.jl](https://github.com/JuliaGraphics/Gtk.jl) - Julia bindings into the powerful Gtk GUI library
+    * [Glade](https://en.wikipedia.org/wiki/Glade_Interface_Designer) - Used to design the Gtk GUI
     * [CairoMakie.jl](https://github.com/JuliaPlots/CairoMakie.jl) - Used to display Makie plots onto Gtk canvas
     * [Makie.jl](https://github.com/MakieOrg/Makie.jl) - Complex Data Visualization library accelerated via GPU
     * [LibSerialPort.jl](https://github.com/JuliaIO/LibSerialPort.jl) - IO from COM ports with UART protocol
