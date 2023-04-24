@@ -1,36 +1,32 @@
 /*
- * BizzanoMicroController.h
- * Author : John Bizzano
- * Code for Spinor Table
+   BizzanoMicroController.h
+   Author : John Bizzano
+   Code for Spinner Table
+
+   Used List
+    Ports:
+     2.0 - UCA0TXD
+     1.3 - Motor ADC Input
+     1.4 - Release Output
+     2.5 - Motor Uart Tx
+
+    Regs:
+     ADCMEM0 - Motor ADC Memory
+
+    Timers:
+     A0 - IR Timer
+
+    UART
+     A0 - PC
+     A1 - Motor
  */
 
 #define DEBUG
-
 #include "bizzanodriverlib/BizzanoMicroController.h"
-
-/*Used List
-
-   Ports:
-    2.0 - UCA0TXD
-    1.3 - Motor ADC Input
-    1.4 - Release Output
-    2.5 - Motor Uart Tx
-
-   Regs:
-    ADCMEM0 - Motor ADC Memory
-
-   Timers:
-    A0 - IR Timer
-
-    UART
-    A0 - PC
-    A1 - Motor
- * */
 
 #define UART_BACKCHANNEL_BASE EUSCI_A0_BASE
 
-//Uses ADC Memory 0
-#define MOTOR_ADC_PORT ADC12_B_INPUT_A3
+#define MOTOR_ADC_PORT ADC12_B_INPUT_A3 //Uses ADC Memory 0
 #define MOTOR_ADC_GPIO_PORT GPIO_PORT_P1, GPIO_PIN3
 #define MOTOR_ADC_OUTPUT ADC12_B_MEMORY_0
 #define MOTOR_UART_TX_PORT GPIO_PORT_P2, GPIO_PIN5
@@ -38,16 +34,15 @@
 
 #define RELEASE_GPIO_PORT GPIO_PORT_P1, GPIO_PIN4
 
-#define IR_TRIP_COUNT 80
+#define IR_TRIP_COUNT 60
 #define IR_TIMER_BASE TIMER_A1_BASE
 #define ADC_IR_SAMPLES 4
 
 #define ACLK_FREQ 32768
-#define ConversionFactorFreqForRPM (float) (32*60)/(3*32768)
+#define ConversionFactorFreqForFreq (double) (32768)/32
 
-int ir_cycle_idx = 0, adc_samples = 0;
+int ir_state = 0, adc_samples = 0;
 bool ir_triggered = false;
-long time_avg = 0;
 float adc_avg = 0;
 
 void init_smclock(){
@@ -104,7 +99,7 @@ void init_motor_uart(){
 }
 
 void motor_uart_write(uint8_t v){ EUSCI_A_UART_transmitData(MOTOR_UART_BASE, v); }
-void write_rpm(float speed){println("\r\nRPM%f", speed);}
+void write_Freq(double speed){println("\r\nFreq%d", speed);}
 
 #pragma vector = USCI_A0_VECTOR
 __interrupt void USCI_A0_ISR(void) {
@@ -116,6 +111,7 @@ __interrupt void USCI_A0_ISR(void) {
                 if(k <= 127){
                     motor_uart_write(0xCA);
                     motor_uart_write(k);
+                    ir_state = 0; //Reset the IR state so that Freq is not miscalculated
                 }else{
                     switch(k){
                         case 128: GPIO_setOutputHighOnPin(RELEASE_GPIO_PORT); break;
@@ -140,14 +136,11 @@ void adc_init(){
     adc_init.internalChannelMap = ADC12_B_NOINTCH;
     adc_init.clockSourceSelect = ADC12_B_CLOCKSOURCE_ADC12OSC;
     ASSERT(ADC12_B_init(ADC12_B_BASE, &adc_init), "Error Enabling ADC12!");
-
     ADC12_B_enable(ADC12_B_BASE);
-
     ADC12_B_setupSamplingTimer(ADC12_B_BASE,
                                ADC12_B_CYCLEHOLD_4_CYCLES,
                                ADC12_B_CYCLEHOLD_8_CYCLES,
                                ADC12_B_MULTIPLESAMPLESENABLE);
-
     ADC12_B_setResolution(ADC12_B_BASE, ADC12_B_RESOLUTION_8BIT);
 
     ADC12_B_configureMemoryParam con;
@@ -164,28 +157,30 @@ void adc_init(){
     ADC12_B_startConversion(ADC12_B_BASE, MOTOR_ADC_OUTPUT, ADC12_B_REPEATED_SINGLECHANNEL);
 }
 
+void on_adc_sample(float value){
+    bool wasTripped = value < IR_TRIP_COUNT;
+    bool stateChange = wasTripped != ir_triggered;
+    ir_triggered = wasTripped;
+    if(ir_state == 0)
+        Fast_Timer_A_setCounterValue(IR_TIMER_BASE, 0); //Start the clock
+
+    if(stateChange){
+        if(++ir_state == 6){ //6 Different States Per Rev
+            ir_state = 0; //Reset
+            write_Freq((ConversionFactorFreqForFreq / (double) Fast_Timer_A_getCounterValue(IR_TIMER_BASE)));
+        }
+    }
+}
+
 #pragma vector=ADC12_VECTOR
 __interrupt void ADC12_ISR(void) {
     switch(__even_in_range(ADC12IV, ADC12IFG0)){
         case 12: //ADC Mem0 ready
             adc_avg += (float) ADC12_B_getResults(ADC12_B_BASE, ADC12_B_MEMORY_0);
             if(++adc_samples == ADC_IR_SAMPLES){
-                if(adc_avg < IR_TRIP_COUNT){ //Was Tripped
-                    if(!ir_triggered){
-                        Fast_Timer_A_setCounterValue(IR_TIMER_BASE, 0); //Start the Clock
-                        ir_triggered = true;
-                    }
-                }else if(ir_triggered){ //End of Ir Blocker
-                    ir_triggered = false;
-                    time_avg += Fast_Timer_A_getCounterValue(IR_TIMER_BASE);
-                    if((++ir_cycle_idx) == 3){
-                        ir_cycle_idx = 0;
-                        write_rpm((uint8_t) ((float) time_avg * ConversionFactorFreqForRPM));
-                        time_avg = 0;
-                    }
-                }
-                adc_samples = 0;
+                on_adc_sample(adc_avg/ADC_IR_SAMPLES);
                 adc_avg = 0;
+                adc_samples = 0;
             }
             ADC12_B_clearInterrupt(ADC12_B_BASE, 0, ADC12_B_IFG0); //Doesnt Clear Auto?? MUST HAVE THIS!!
             break;
@@ -208,7 +203,7 @@ void init_ir_timer(){
 __interrupt void TIMER1_A1_ISR(void) {
     switch (__even_in_range(TA1IV, 14)){
         case 14: // overflow
-            write_rpm(0);
+            write_Freq(0);
             debug("Timer OverFlow!");
             break;
         default: break;
@@ -240,7 +235,6 @@ int main(void) {
         if(cycle_count++ % 1000 == 0)
             println("HeartBeat: %u", cycle_count);
 #endif
-
     }
 }
 

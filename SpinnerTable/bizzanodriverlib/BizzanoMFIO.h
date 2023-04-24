@@ -13,21 +13,7 @@ void stdout_print_char(uint8_t c);
 
 typedef void print_char_f(uint8_t c);
 
-char dig2char(int i){
-    switch(i){
-        case 0: return '0';
-        case 1: return '1';
-        case 2: return '2';
-        case 3: return '3';
-        case 4: return '4';
-        case 5: return '5';
-        case 6: return '6';
-        case 7: return '7';
-        case 8: return '8';
-        case 9: return '9';
-        default: return '?';
-    }
-}
+char dig2char(int i){ return (i >= 0 && i <= 9) ? (char) ('0' + i) : '?'; }
 
 void fprint_str(print_char_f _writeChar, char* str){
     if(str != NULL){
@@ -59,49 +45,56 @@ void fprint_ulong(print_char_f _writeChar, char* buffer, unsigned long l){
     fprint_str(_writeChar, buffer);
 }
 
+void fprint_long(print_char_f _writeChar, char* buffer, long l){
+    if(l < 0){
+        _writeChar('-');
+        l *= -1;
+    }
+    fprint_ulong(_writeChar, buffer, (unsigned long) l);
+}
+
+void fprint_double(print_char_f _writeChar, char* buffer, double d){
+    if(d < 0){
+        _writeChar('-');
+        d *= -1;
+    }
+    unsigned long units = floor(d);
+    fprint_ulong(_writeChar, buffer, units);
+    unsigned long decimals = (unsigned long) (10E3 * (d - units));
+    if(decimals > 0){
+        _writeChar('.');
+        fprint_ulong(_writeChar, buffer, decimals);
+    }
+}
+
 //Fast Light Weight Printf Implementation
 void fprint(print_char_f _writeChar, char* fmt, ...){
     va_list sprintf_args;
     va_start(sprintf_args, fmt);
     char buffer[15];
-    double number;
 
     while(true){
-        top:
         switch(*fmt){
             case '%':
                 fmt++;
                 switch(*(fmt++)){
-                    case 'c': _writeChar(va_arg(sprintf_args, char)); break;
+                    case 'c': _writeChar(va_arg(sprintf_args, int)); break;
                     case 'b': fprint_str(_writeChar, va_arg(sprintf_args, bool)?"true":"false"); break;
-                    case 'i': number = va_arg(sprintf_args, int); goto write_number;
-                    case 'u': number = va_arg(sprintf_args, unsigned int); goto write_number;
-                    case 'l': number = va_arg(sprintf_args, long); goto write_number;
+                    case 'i': fprint_long(_writeChar, buffer, va_arg(sprintf_args, int)); break;
+                    case 'u': fprint_long(_writeChar, buffer, va_arg(sprintf_args, unsigned int)); break;
+                    case 'l': fprint_long(_writeChar, buffer, va_arg(sprintf_args, long)); break;
                     case 'U': fprint_ulong(_writeChar, buffer, va_arg(sprintf_args, unsigned long)); break;
-                    case 'f': number = va_arg(sprintf_args, float); goto write_number;
-                    case 'd': number = va_arg(sprintf_args, double); goto write_number;
-                    case 'p': number = (long) va_arg(sprintf_args, void*); goto write_number;
+                    case 'f': fprint_double(_writeChar, buffer, va_arg(sprintf_args, double)); break;
+                    case 'd': fprint_double(_writeChar, buffer, va_arg(sprintf_args, double)); break;
+                    case 'p':fprint_ulong(_writeChar, buffer, (unsigned long) va_arg(sprintf_args, void*)); break;
                     case 's': fprint_str(_writeChar, va_arg(sprintf_args, char*)); break;
                     case '\0': return;
                     default: _writeChar('%'); fmt--; break;
                 }
-                goto top;
+                break;
             case '\0': return;
             default: _writeChar(*(fmt++)); continue;
         }
-
-        write_number:
-            if(number < 0){
-                _writeChar('-');
-                number *= -1;
-            }
-            unsigned long units = floor(number);
-            fprint_ulong(_writeChar, buffer, units);
-            unsigned long decimals = (unsigned long) (10E3 * (number - units));
-            if(decimals > 0){
-                _writeChar('.');
-                fprint_ulong(_writeChar, buffer, decimals);
-            }
     }
     va_end(sprintf_args);
 }

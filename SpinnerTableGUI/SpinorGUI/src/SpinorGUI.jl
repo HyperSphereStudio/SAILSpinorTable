@@ -6,18 +6,22 @@ include("JuliaGUI.jl")
 
 const DeviceBaudRate = 115200
 const InitMotorSpeed = 75
+const TimeDisplayWindow = 10
 
-window = nothing
 deviceSerialPort = nothing
-desiredMotorRPM = 0
+desiredMotorFreq = 0
 currentMotorValue = 0
-motorRPMLabel = nothing
-devicePortSelect = nothing
-plotCanvasObject = nothing
+motorFreqLabel = nothing
+saveFile = ""
 measuredMotorValues = Observable(Point2f[])
+desiredMotorValues = Observable(Point2f[])
+update_plot = nothing
 runningTime = now()
 
 comp_println(x...) = println("[Comp]:", x...)
+isactiveserial() = isopen(deviceSerialPort)
+running_time_in_seconds() = Dates.value(now() - runningTime) * 1E-3
+
 function close_port()
     global deviceSerialPort
     if isopen(deviceSerialPort)
@@ -27,92 +31,137 @@ function close_port()
 end
 
 function set_motor_speed(v)
-    global motorValue = clamp(v, 0, 127)
+    isactiveserial() || (println("Motor Port Not Open!"); return)
+    global currentMotorValue = clamp(v, 0, 127)
     comp_println("Set Motor Speed $v")
-    write(deviceSerialPort, UInt8(motorValue)) 
+    write(deviceSerialPort, UInt8(currentMotorValue)) 
 end
 
 function watch_uart()
-    global deviceSerialPort, motorRPMLabel, currentMotorValue
-
-    isopen(deviceSerialPort) || (close_port(); set_gtk_property!(devicePortSelect, "active", -1); return)
+    global deviceSerialPort, motorFreqLabel, currentMotorValue
 
     readlines(deviceSerialPort) do str 
-        if startswith(str, "RPM")
-            measuredMotorRPM = parse(Float64, str[4:end])
-            currentMotorValue += cmp(desiredMotorRPM, measuredMotorRPM)
-            comp_println("Set Motor Speed To $currentMotorValue. Measured: $measuredMotorRPM RPM. Desire: $desiredMotorRPM RPM")
+        if startswith(str, "Freq")
+            measuredMotorFreq = parse(Float64, str[5:end])
+            currentMotorValue += cmp(desiredMotorFreq, measuredMotorFreq)
+            comp_println("Measured: $measuredMotorFreq Freq. Desire: $desiredMotorFreq Freq")
             set_motor_speed(currentMotorValue)
-            x = Dates.value(now()-runningTime)*1E-3 #Seconds
-            y = measuredMotorRPM
-            push!(measuredMotorValues[], (x, y))
-            notify(measuredMotorValues)
-            draw(plotCanvasObject)
-            GAccessor.text(motorRPMLabel, "<b>Measured RPM:$measuredMotorRPM</b>")
+            time = running_time_in_seconds()
+            push!(measuredMotorValues[], (time, measuredMotorFreq))
+            push!(desiredMotorValues[], (time, desiredMotorFreq))
+            update_plot()
+            GAccessor.markup(motorFreqLabel, "<b>Measured: $measuredMotorFreq Hz</b>")
         else
             println("[Device]:$str")
         end
     end
 end
 
-function set_port(name)
-    global deviceSerialPort
-
-    name === nothing && return
-    deviceSerialPort === nothing || close(deviceSerialPort)
-    deviceSerialPort = MicroControllerPort(name, DeviceBaudRate)
-    comp_println("Reading Port $name [open = $(isopen(deviceSerialPort))]")
-end
-
 function launch_gui()
-    global desiredMotorRPM, plotCanvasObject, desiredMotorRPM
+    global desiredMotorFreq, plotCanvasObject, desiredMotorFreq, currentMotorValue, desiredMotorValues, saveFile, runningTime
 
     builder = GtkBuilder(filename="gui.glade")
-    frame = builder["frame"]
     win = builder["window"]
-    global devicePortSelect = builder["portComboBox"]
-    global motorRPMLabel = builder["realMotorRPM"]
+    devicePortSelect = builder["portComboBox"]
+    global motorFreqLabel = builder["realMotorFreq"]
     plotBox = builder["plotBox"]
     motorFreq = builder["motorFreq"]
+    portTimer = nothing
 
-    function update_speed(s, shouldUpdate)
-        desiredMotorRPM = s isa String ? s == "" ? 0 : parse(Float64, s) : s
-        shouldUpdate && @sigatom @async GAccessor.text(motorFreq, string(s))
-        desiredMotorRPM == 0 && set_motor_speed(0)
+    function update_speed(v)
+        desiredMotorFreq = v
+        desiredMotorFreq == 0 && set_motor_speed(0)
+        @sigatom @async GAccessor.value(motorFreq) != v && GAccessor.value(motorFreq, v)
     end
 
-    foreach(p -> push!(devicePortSelect, p), get_port_list())
+    function reset()
+        update_speed(0)
+        empty!(measuredMotorValues[])
+        empty!(desiredMotorValues[])
+        runningTime = now()
+        update_plot()
+    end
+
+    function start()
+        reset()
+        set_motor_speed(InitMotorSpeed)
+        update_speed(1.5)
+    end
+
+    function update_com_ports()
+        isactiveserial() && return
+        empty!(devicePortSelect)
+        foreach(p -> push!(devicePortSelect, p), get_port_list())     
+    end
+
+    function set_port(name)
+        global deviceSerialPort
+        isactiveserial() && close(deviceSerialPort)
+        name != "" && (deviceSerialPort = MicroControllerPort(name, DeviceBaudRate))
+        comp_println("Reading Port $name [open = $(isopen(deviceSerialPort))]")
+        reset()
+    end
+
+    begin #Setup GUI window
+        signal_connect(_-> exit(), win, :destroy)
+        signal_connect(_-> set_port(gtk_to_string(GAccessor.active_text(devicePortSelect))), devicePortSelect, "changed")
+        signal_connect(wid -> saveFile = gtk_to_string(GAccessor.filename(GtkFileChooser(wid))), builder["fileSelect"], "file-set")
+        signal_connect(function save_to_file(_)
+                            println("Saving Run To File to $saveFile")
+                            if isfile(saveFile)
+                                open(saveFile, "w") do f 
+                                    mV = measuredMotorValues[]
+                                    dV = desiredMotorValues[]
+                                    Base.write(f, "Time[S] Measured[Hz] Desired[Hz]")
+                                    foreach(i -> Base.write(f, "$(mV[i][1]) $(mV[i][2]) $(dV[i][2])\r\n"), eachindex(mV))
+                                end
+                            end 
+                        end, builder["save"], "clicked")               
+        signal_connect(_-> update_speed(GAccessor.value(motorFreq)), motorFreq, "value-changed")
+        signal_connect(_-> start(), builder["start"], "clicked")
+        signal_connect(_-> update_speed(0), builder["reset"], "clicked")
+        signal_connect(function fire_item_release(_)
+                           comp_println("Releasing!")
+                           write(deviceSerialPort, UInt8(128))
+                           sleep(.5)
+                           comp_println("Stopping Release")
+                           write(deviceSerialPort, UInt8(129))
+                       end, builder["release"], "clicked")
+        update_com_ports()               
+        portTimer = Timer(_->update_com_ports(), 1; interval=2)
+    end
+
+    begin  #Create Plot
+        set_theme!(theme_dark())
+        fig = Figure()
+        plotCanvasObject = GtkCanvas(get_gtk_property(plotBox, "width-request", Int), get_gtk_property(plotBox, "height-request", Int))
+        push!(plotBox, plotCanvasObject)
+        ax = Axis(fig[1, 1], 
+            backgroundcolor=:grey, xlabel="Time [s]", ylabel="Freq [Hz]", title="Spinner Rate", 
+            titlecolor=:white, xgridcolor = :white, ygridcolor = :white, xlabelcolor = :white, 
+            ylabelcolor = :white, xticklabelcolor = :white, yticklabelcolor = :white)
+        lines!(ax, measuredMotorValues, color=:blue, label="Measured")
+        lines!(ax, desiredMotorValues, color=:green, label="Desired")
+        fig[1, 2] = Legend(fig, ax, "Freq", framevisible = false)
+        makie_draw(plotCanvasObject, fig)
     
-    signal_connect(_-> exit(0), win, :destroy)
-    signal_connect(_-> set_port(Gtk.bytestring(GAccessor.active_text(devicePortSelect))), devicePortSelect, "changed")
-    signal_connect(_-> update_speed(get_gtk_property(motorFreq, :text, String), false), motorFreq, "changed")
-    signal_connect(_-> update_speed(desiredMotorRPM * 2, true), builder["addFreq"], "clicked")
-    signal_connect(_-> update_speed(desiredMotorRPM /= 2, true), builder["decFreq"], "clicked")
-    signal_connect(_-> (set_motor_speed(InitMotorSpeed); update_speed(6, true)), builder["start"], "clicked")
-    signal_connect(function(_)
-                       update_speed(0, true)
-                       empty!(measuredMotorValues[])
-                   end, builder["reset"], "clicked")
-    signal_connect(function(_)
-                       comp_println("Releasing!")
-                       write(deviceSerialPort, UInt8(128))
-                       sleep(1)
-                       comp_println("Stopping Release")
-                       write(deviceSerialPort, UInt8(129))
-                   end, builder["release"], "clicked")
-
-    fig = Figure()
-    plotCanvasObject = GtkCanvas(get_gtk_property(plotBox, "width-request", Int), get_gtk_property(plotBox, "height-request", Int))
-    push!(plotBox, plotCanvasObject)
-    ax = Axis(fig[1, 1], backgroundcolor="white", xlabel="Time [s]", ylabel="Freq [RPM]", title="Spinner RPM")
-    lines!(ax, measuredMotorValues, color="green")
-    makie_draw(plotCanvasObject, fig)
-
+        global update_plot = function()
+            time = running_time_in_seconds()
+            xlims!(ax, (time - TimeDisplayWindow, time))
+            notify(desiredMotorValues)
+            draw(plotCanvasObject)
+        end
+    end
+    
     @async showall(win)
     @async Gtk.gtk_main()
-
+    
     while true
-        watch_uart()
+        if isactiveserial() watch_uart()
+        else
+            close_port()
+            set_gtk_property!(devicePortSelect, "active", -1)
+        end
         yield()
         sleep(1E-2)
     end
