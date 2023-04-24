@@ -1,0 +1,1 @@
+julia SpinorGUI/src/SpinorGUI.jl sys_image
