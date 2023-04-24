@@ -1,6 +1,5 @@
-using Gtk, CairoMakie, GLMakie, Observables, PackageCompiler
+using Gtk, CairoMakie, Makie, Observables, PackageCompiler
 
-GLMakie.activate!()
 CairoMakie.activate!()
 
 function makie_draw(canvas, fig)
