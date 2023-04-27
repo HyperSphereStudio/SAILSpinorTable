@@ -215,7 +215,7 @@
           </packing>
         </child>
         <child>
-          <object class="GtkComboBoxText" id="sensorPorts">
+          <object class="GtkComboBoxText" id="gyroPorts">
             <property name="width-request">155</property>
             <property name="height-request">40</property>
             <property name="visible">True</property>
