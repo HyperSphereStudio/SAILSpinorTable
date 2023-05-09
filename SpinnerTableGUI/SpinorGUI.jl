@@ -5,18 +5,21 @@ const GyroBaudRate = 9600
 const InitMotorSpeed = 75
 const TimeDisplayWindow = 10
 const SampleRate = .25
+const MaxMotorCurrent = 2.5 #A
+const InitMotorVoltage = 21 #V
 
 comp_println(x...) = println("[Comp]:", x...)
 
 function launch_gui()
     motorFreqLabel, portTimer, update_plot = (nothing, nothing, nothing)
     currentMotorValue = 0
-    df = DataFrame(Time=Float32[], IR=Float32[], Gyro=Float32[], Desired=Float32[])
-    cols = 4
+    df = DataFrame(Time=Float32[], IR=Float32[], Gyro=Float32[], Desired=Float32[], InputMotorPower=Float32[])
+    cols = size(df, 2)
     measurements = zeros(cols)
-    time, ir, gyro, desired = 1:cols
+    time, ir, gyro, desired, inputmotorpower = 1:cols
     runningTime = now()
     controlFreq = 0.0
+    motorVoltage = InitMotorVoltage
 
     running_time_in_seconds() = Dates.value(now() - runningTime) * 1E-3
     measure!(name, v) = measurements[name] = v
@@ -27,7 +30,9 @@ function launch_gui()
     select_box = GtkBox(:v)
     devicePortSelect = GtkComboBoxText()
     gyroPortSelect = GtkComboBoxText()
-    append!(select_box, makewidgetwithtitle(devicePortSelect, "Device Port"), makewidgetwithtitle(gyroPortSelect, "Gyro Port"))
+    motor_voltage_entry = GtkEntry(input_purpose = Gtk4.InputPurpose_NUMBER)
+    motor_voltage_entry[] = motorVoltage
+    append!(select_box, makewidgetwithtitle(devicePortSelect, "Device Port"), makewidgetwithtitle(gyroPortSelect, "Gyro Port"), makewidgetwithtitle(motor_voltage_entry, "Motor Voltage [V]"))
 
     control_box = GtkBox(:v)
     play_button = buttonwithimage("Play", GtkImage(icon_name = "media-playback-start"))
@@ -72,9 +77,12 @@ function launch_gui()
                                 Gtk4.markup(motorFreqLabel, "<b>Measured: $v Hz</b>")
                              end, 5; interval=SampleRate)
 
+    getinputmotorpower() = currentMotorValue / 127 * motorVoltage * MaxMotorCurrent
+
     function set_motor_speed(v)
         check(deviceSerial) || (println("Motor Port Not Open!"); return)
         currentMotorValue = clamp(v, 0, 127)
+        measure!(inputmotorpower, getinputmotorpower())
         comp_println("Set Motor Speed $v")
         write(deviceSerial, UInt8(currentMotorValue)) 
     end
@@ -131,6 +139,7 @@ function launch_gui()
         on(_-> save_dialog(save_to_file, "Save data file as...", nothing, ["*.csv"]), save_button)
         on(w -> update_speed(w[]), motor_control_adjuster)
         on(_ -> start(), play_button)
+        on(w -> motorVoltage = w[Float64], motor_voltage_entry)
         on(_ -> update_speed(0), stop_button)
         on(function fire_item_release(_)
             comp_println("Releasing!")
@@ -144,23 +153,31 @@ function launch_gui()
         set_theme!(theme_dark())
         fig = Figure()
 
-        ax = Axis(fig[1, 1], 
+        rpm_ax = Axis(fig[1:2, 1], 
             backgroundcolor=:grey, xlabel="Time [s]", ylabel="Freq [Hz]", title="Spinner Rate", 
             titlecolor=:white, xgridcolor = :white, ygridcolor = :white, xlabelcolor = :white, 
             ylabelcolor = :white, xticklabelcolor = :white, yticklabelcolor = :white)  
         
-        notification_hook = Observable(df.IR)   
-        lines!(ax, notification_hook, color=:blue, label="IR Measured")
-        lines!(ax, Observable(df.Gyro), color=:red, label="Gyro Measured")
-        lines!(ax, Observable(df.Desired), color=:green, label="Desired")
-        fig[1, 2] = Legend(fig, ax, "Freq", framevisible = false)
+        notification_hook = Observable(df.Time)   
+        lines!(rpm_ax, notification_hook, Observable(df.IR), color=:blue, label="IR Measured")
+        lines!(rpm_ax, notification_hook, Observable(df.Gyro), color=:red, label="Gyro Measured")
+        lines!(rpm_ax, notification_hook, Observable(df.Desired), color=:green, label="Desired")
+        fig[1:2, 2] = Legend(fig, rpm_ax, "Freq", framevisible = false)
+
+        power_ax = Axis(fig[3, 1], 
+            backgroundcolor=:grey, xlabel="Time [s]", ylabel="Power [W]", title="Power", 
+            titlecolor=:white, xgridcolor = :white, ygridcolor = :white, xlabelcolor = :white, 
+            ylabelcolor = :white, xticklabelcolor = :white, yticklabelcolor = :white) 
+        lines!(power_ax, notification_hook, Observable(df.InputMotorPower), color=:yellow, label="Input Motor Power")
+        fig[3, 2] = Legend(fig, power_ax, "Power", framevisible = false)
         
         screen = GtkGLScreen(plot)
         display(screen, fig)
     
         update_plot = function()
             time = running_time_in_seconds()
-            xlims!(ax, (time - TimeDisplayWindow, time))
+            xlims!(rpm_ax, (time - TimeDisplayWindow, time))
+            xlims!(power_ax, (time - TimeDisplayWindow, time))
             notify(notification_hook)
         end
     end
