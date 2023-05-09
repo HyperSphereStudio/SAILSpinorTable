@@ -168,22 +168,6 @@
           </packing>
         </child>
         <child>
-          <object class="GtkBox" id="plotBox">
-            <property name="width-request">600</property>
-            <property name="height-request">500</property>
-            <property name="visible">True</property>
-            <property name="can-focus">False</property>
-            <property name="orientation">vertical</property>
-            <child>
-              <placeholder/>
-            </child>
-          </object>
-          <packing>
-            <property name="x">229</property>
-            <property name="y">105</property>
-          </packing>
-        </child>
-        <child>
           <object class="GtkComboBoxText" id="devicePorts">
             <property name="width-request">155</property>
             <property name="height-request">40</property>
@@ -238,6 +222,20 @@
           <packing>
             <property name="x">189</property>
             <property name="y">2</property>
+          </packing>
+        </child>
+        <child>
+          <object class="GtkGLArea">
+            <property name="width-request">500</property>
+            <property name="height-request">500</property>
+            <property name="visible">True</property>
+            <property name="app-paintable">True</property>
+            <property name="can-focus">False</property>
+            <property name="auto-render">False</property>
+          </object>
+          <packing>
+            <property name="x">250</property>
+            <property name="y">125</property>
           </packing>
         </child>
       </object>

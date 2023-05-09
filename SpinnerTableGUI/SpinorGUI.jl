@@ -1,4 +1,4 @@
-using JuliaSAILGUI, Dates, DataFrames, Gtk, CairoMakie, Observables, LibSerialPort, CSV
+using JuliaSAILGUI, Dates, DataFrames, Gtk4, Observables, LibSerialPort, CSV, GLMakie
 
 const DeviceBaudRate = 115200
 const GyroBaudRate = 9600
@@ -11,34 +11,65 @@ comp_println(x...) = println("[Comp]:", x...)
 function launch_gui()
     motorFreqLabel, portTimer, update_plot = (nothing, nothing, nothing)
     currentMotorValue = 0
-    file = ""
     df = DataFrame(Time=Float32[], IR=Float32[], Gyro=Float32[], Desired=Float32[])
-
-    builder = GtkBuilder(filename="gui.glade")
-    win, devicePortSelect, gyroPortSelect, motorFreqLabel, plotBox, motorFreq = 
-        map(v->builder[v], ["window", "devicePorts", "gyroPorts", "realMotorFreq", "plotBox", "motorFreq"])
-    
-    deviceSerial = MicroControllerPort(:device, DeviceBaudRate, on_disconnect=()->set_gtk_property!(devicePortSelect, "active", -1))
-    gyroSerial = MicroControllerPort(:gyro, GyroBaudRate, on_disconnect=()->set_gtk_property!(serialPortSelect, "active", -1))
-    
-    runningTime = now()
     cols = 4
-    portSelectors = [devicePortSelect, gyroPortSelect]
-    ports = [deviceSerial, gyroSerial]
+    measurements = zeros(cols)
+    time, ir, gyro, desired = 1:cols
+    runningTime = now()
     controlFreq = 0.0
-    measurements = [0.0 for i in 1:cols]
 
-    time = 1; ir = 2; gyro = 3; desired = 4
     running_time_in_seconds() = Dates.value(now() - runningTime) * 1E-3
     measure!(name, v) = measurements[name] = v
     measure(name) = measurements[name]
+
+    back_box = GtkBox(:v, 50)
+
+    select_box = GtkBox(:v)
+    devicePortSelect = GtkComboBoxText()
+    gyroPortSelect = GtkComboBoxText()
+    append!(select_box, makewidgetwithtitle(devicePortSelect, "Device Port"), makewidgetwithtitle(gyroPortSelect, "Gyro Port"))
+
+    control_box = GtkBox(:v)
+    play_button = buttonwithimage("Play", GtkImage(icon_name = "media-playback-start"))
+    stop_button = buttonwithimage("Stop", GtkImage(icon_name = "process-stop"))
+    save_button = buttonwithimage("Save", GtkImage(icon_name = "document-save-as"))
+
+    append!(control_box, play_button, stop_button, save_button)
+
+    motor_control_adjuster = GtkAdjustment(0, 0, 11, .25, 1, 0)
+    motor_control = GtkSpinButton(motor_control_adjuster, .1, 3)
+    motor_control.update_policy = Gtk4.SpinButtonUpdatePolicy_IF_VALID
+    motor_control.orientation = Gtk4.Orientation_VERTICAL
+   
+    release_button = GtkButton("Release")
+
+    append!(back_box, select_box, makewidgetwithtitle(control_box, "Control"), makewidgetwithtitle(motor_control, "Motor Frequency"), release_button)    
+
+    plot = GtkGLArea(hexpand=true, vexpand=true)
+
+    motor_freq_label = GtkLabel("")
+    motor_freq_label.hexpand = true
+    Gtk4.markup(motor_freq_label, "<b>Motor Frequency:0 Hz</b>")
+
+    win = GtkWindow("Spinner Table")
+    grid = GtkGrid(column_homogeneous=true)
+    win[] = grid
+    grid[1, 1:6] = back_box
+    grid[2:7, 1:6] = plot
+    grid[2:7, 7] = motor_freq_label
+
+    deviceSerial = MicroControllerPort(:device, DeviceBaudRate, LineReader(), on_disconnect = () -> devicePortSelect.active = -1)
+    gyroSerial = MicroControllerPort(:gyro, GyroBaudRate, LineReader(), on_disconnect = () -> gyroPortSelect.active = -1)
+    
+    portSelectors = [devicePortSelect, gyroPortSelect]
+    ports = [deviceSerial, gyroSerial]
 
     motorSampleTimer = Timer(function(_)
                                 currentMotorValue > 0 || return
                                 measure!(time, running_time_in_seconds())
                                 push!(df, measurements)
                                 update_plot()
-                                GAccessor.markup(motorFreqLabel, "<b>Measured: $v Hz</b>")
+                                Gtk4.markup(motorFreqLabel, "<b>Measured: $v Hz</b>")
                              end, 5; interval=SampleRate)
 
     function set_motor_speed(v)
@@ -51,7 +82,7 @@ function launch_gui()
     function update_speed(v)
         measure!(desired, v)
         v == 0 && set_motor_speed(0) 
-        @sigatom @async GAccessor.value(motorFreq) != v && GAccessor.value(motorFreq, v)
+        @async motor_control_adjuster[] != v && (motor_control_adjuster = v)
     end
 
     function reset()
@@ -77,7 +108,7 @@ function launch_gui()
             end, eachindex(ports))
     end
 
-    set_port(port, selector) = setport(port, gtk_to_string(GAccessor.active_text(selector))) && reset()
+    set_port(port, selector) = setport(port, selector[]) && reset()
 
     function update_motor(measuredFreq)
         desFreq = measure(desired)
@@ -86,24 +117,25 @@ function launch_gui()
         set_motor_speed(currentMotorValue)
     end
 
-    function save_to_file()
-        println("Saving Run To File to $file")
-        isfile(file) && CSV.write(file, df)
+    function save_to_file(file)
+        if isfile(file)
+            println("Saving Run To File to $file")
+            CSV.write(file, df)
+        end
     end
 
     begin #Setup GUI window
-        signal_connect(_-> exit(), win, :destroy)
-        signal_connect(_-> set_port(deviceSerial, devicePortSelect), devicePortSelect, "changed")
-        signal_connect(_-> set_port(gyroSerial, gyroPortSelect), gyroPortSelect, "changed")
-        signal_connect(wid->file = gtk_to_string(GAccessor.filename(GtkFileChooser(wid))), builder["fileSelect"], "file-set")
-        signal_connect(_-> save_to_file(file), builder["save"], "clicked")               
-        signal_connect(_-> update_speed(GAccessor.value(motorFreq)), motorFreq, "value-changed")
-        signal_connect(_-> start(), builder["start"], "clicked")
-        signal_connect(_-> update_speed(0), builder["reset"], "clicked")
-        signal_connect(function fire_item_release(_)
-                           comp_println("Releasing!")
-                           comp_println("Stopping Release")
-                       end, builder["release"], "clicked")
+        signal_connect(_-> exit(), win, :close_request)
+        on(w -> set_port(deviceSerial, w), devicePortSelect)
+        on(w -> set_port(gyroSerial, w), gyroPortSelect)
+        on(_-> save_dialog(save_to_file, "Save data file as...", nothing, ["*.csv"]), save_button)
+        on(w -> update_speed(w[]), motor_control_adjuster)
+        on(_ -> start(), play_button)
+        on(_ -> update_speed(0), stop_button)
+        on(function fire_item_release(_)
+            comp_println("Releasing!")
+            comp_println("Stopping Release")
+           end, release_button)
         update_com_ports()               
         portTimer = Timer(_->update_com_ports(), 1; interval=2)
     end
@@ -111,8 +143,6 @@ function launch_gui()
    begin  #Create Plot
         set_theme!(theme_dark())
         fig = Figure()
-        plotCanvasObject = GtkCanvas(get_gtk_property(plotBox, "width-request", Int), get_gtk_property(plotBox, "height-request", Int))
-        push!(plotBox, plotCanvasObject)
 
         ax = Axis(fig[1, 1], 
             backgroundcolor=:grey, xlabel="Time [s]", ylabel="Freq [Hz]", title="Spinner Rate", 
@@ -124,40 +154,40 @@ function launch_gui()
         lines!(ax, Observable(df.Gyro), color=:red, label="Gyro Measured")
         lines!(ax, Observable(df.Desired), color=:green, label="Desired")
         fig[1, 2] = Legend(fig, ax, "Freq", framevisible = false)
-        makie_draw(plotCanvasObject, fig)
+        
+        screen = GtkGLScreen(plot)
+        display(screen, fig)
     
         update_plot = function()
             time = running_time_in_seconds()
             xlims!(ax, (time - TimeDisplayWindow, time))
             notify(notification_hook)
-            draw(plotCanvasObject)
         end
     end
-    
-    showall(win)
-    @async Gtk.gtk_main()
+
+    display_gui(win; blocking=false)
 
     atexit(() -> set_motor_speed(0)) #Turn the Table off if julia exits
     
     while true
-        isopen(deviceSerial) && JuliaSAILGUI.readlines(deviceSerial) do str
+        isopen(deviceSerial) && readport(deviceSerial) do str
             if startswith(str, "Freq")
                 irFreq = parse(Float64, str[5:end])
                 measure!(ir, irFreq)
-                update_motor(irFreq) #Have IR Control Motor Speed
+                #update_motor(irFreq) #Have IR Control Motor Speed
             else
                 println("[Device]:$str")
             end
         end
         
-        isopen(gyroSerial) && JuliaSAILGUI.readlines(gyroSerial) do str
+        isopen(gyroSerial) && readport(gyroSerial) do str
             data = split(str, ",")
             if length(data) > 2
                 packet_num, Gx_DPS, Gy_DPS, Gz_DPS, Ax_g, Ay_g, Az_g, Mx_Gauss, My_Gauss, Mz_Gauss = parse.(Float64, data)
                 Gx_Hz, Gy_Hz, Gz_Hz = (Gx_DPS, Gy_DPS, Gz_DPS) ./ 360
                 
                 measure!(gyro, Gz_Hz)
-                #update_motor(Gz_Hz) #Controlled via Gyro
+                update_motor(Gz_Hz) #Controlled via Gyro
             else 
                 println("[Gyro]:$str")
             end
