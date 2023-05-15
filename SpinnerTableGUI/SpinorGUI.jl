@@ -11,14 +11,13 @@ const InitMotorVoltage = 21 #V
 comp_println(x...) = println("[Comp]:", x...)
 
 function launch_gui()
-    motorFreqLabel, portTimer, update_plot = (nothing, nothing, nothing)
+    motorFreqLabel, portTimer, update_plot, motorSampleTimer = (nothing, nothing, nothing, nothing)
     currentMotorValue = 0
     df = DataFrame(Time=Float32[], IR=Float32[], Gyro=Float32[], Desired=Float32[], InputMotorPower=Float32[])
     cols = size(df, 2)
     measurements = zeros(cols)
-    time, ir, gyro, desired, inputmotorpower = 1:cols
+    Time, IR, Gyro, Desired, InputMotorPower = 1:cols
     runningTime = now()
-    controlFreq = 0.0
     motorVoltage = InitMotorVoltage
 
     running_time_in_seconds() = Dates.value(now() - runningTime) * 1E-3
@@ -63,34 +62,38 @@ function launch_gui()
     grid[2:7, 1:6] = plot
     grid[2:7, 7] = motor_freq_label
 
-    deviceSerial = MicroControllerPort(:device, DeviceBaudRate, LineReader(), on_disconnect = () -> devicePortSelect.active = -1)
-    gyroSerial = MicroControllerPort(:gyro, GyroBaudRate, LineReader(), on_disconnect = () -> gyroPortSelect.active = -1)
+    deviceSerial = MicroControllerPort(:device, DeviceBaudRate, DelimitedReader("\r\n"), on_disconnect = () -> devicePortSelect.active = -1)
+    gyroSerial = MicroControllerPort(:gyro, GyroBaudRate, DelimitedReader("\r\n"), on_disconnect = () -> gyroPortSelect.active = -1)
     
     portSelectors = [devicePortSelect, gyroPortSelect]
     ports = [deviceSerial, gyroSerial]
 
-    motorSampleTimer = Timer(function(_)
-                                currentMotorValue > 0 || return
-                                measure!(time, running_time_in_seconds())
-                                push!(df, measurements)
-                                update_plot()
-                                Gtk4.markup(motorFreqLabel, "<b>Measured: $v Hz</b>")
-                             end, 5; interval=SampleRate)
+    function motor_timer_callback(_)
+        measure!(Time, running_time_in_seconds())
+        push!(df, measurements)
+        update_plot()
+        Gtk4.markup(motor_freq_label, "<b>Measured: $(measure(Desired)) Hz</b>")
+    end
 
     getinputmotorpower() = currentMotorValue / 127 * motorVoltage * MaxMotorCurrent
 
-    function set_motor_speed(v)
-        check(deviceSerial) || (println("Motor Port Not Open!"); return)
+    function set_motor_native_speed(v)
+        isopen(deviceSerial) || (println("Motor Port Not Open!"); return)
         currentMotorValue = clamp(v, 0, 127)
-        measure!(inputmotorpower, getinputmotorpower())
+        measure!(InputMotorPower, getinputmotorpower())
         comp_println("Set Motor Speed $v")
         write(deviceSerial, UInt8(currentMotorValue)) 
     end
 
+    is_active() = measure(Desired) != 0
+
     function update_speed(v)
-        measure!(desired, v)
-        v == 0 && set_motor_speed(0) 
-        @async motor_control_adjuster[] != v && (motor_control_adjuster = v)
+        measure!(Desired, v)
+        if v == 0
+            set_motor_native_speed(0)
+            isopen(motorSampleTimer) && close(motorSampleTimer)
+        end
+        @async motor_control_adjuster[] != v && (motor_control_adjuster[] = v)
     end
 
     function reset()
@@ -101,28 +104,29 @@ function launch_gui()
     end
 
     function start()
+        isopen(deviceSerial) || (println("Motor Port Not Open!"); return)
         reset()
-        set_motor_speed(InitMotorSpeed)
+        motorSampleTimer = Timer(motor_timer_callback, 0; interval=SampleRate)
+        set_motor_native_speed(InitMotorSpeed)
         update_speed(1.5)
     end
 
     function update_com_ports()
         portList = get_port_list()
-        foreach(i -> check(ports[i]) || 
-            begin 
-                ps = portSelectors[i] 
-                empty!(ps)
-                foreach(p -> push!(ps, p), portList) 
-            end, eachindex(ports))
+        foreach(function (i) 
+                    isopen(ports[i]) && return
+                    ps = portSelectors[i] 
+                    empty!(ps)
+                    foreach(p -> push!(ps, p), portList) 
+                end, eachindex(ports))
     end
 
     set_port(port, selector) = setport(port, selector[]) && reset()
 
     function update_motor(measuredFreq)
-        desFreq = measure(desired)
-        currentMotorValue += cmp(desFreq, controlFreq)
-        comp_println("Measured: $controlFreq Hz. Desired: $desFreq Hz")
-        set_motor_speed(currentMotorValue)
+        currentMotorValue += cmp(measure(Desired), measuredFreq)
+        comp_println("Measured: $measuredFreq Hz. Desired: $(measure(Desired)) Hz")
+        set_motor_native_speed(currentMotorValue)
     end
 
     function save_to_file(file)
@@ -150,13 +154,10 @@ function launch_gui()
     end
 
    begin  #Create Plot
-        set_theme!(theme_dark())
+        set_theme!(theme_hypersphere())
         fig = Figure()
 
-        rpm_ax = Axis(fig[1:2, 1], 
-            backgroundcolor=:grey, xlabel="Time [s]", ylabel="Freq [Hz]", title="Spinner Rate", 
-            titlecolor=:white, xgridcolor = :white, ygridcolor = :white, xlabelcolor = :white, 
-            ylabelcolor = :white, xticklabelcolor = :white, yticklabelcolor = :white)  
+        rpm_ax = Axis(fig[1:2, 1], xlabel="Time [s]", ylabel="Freq [Hz]", title="Spinner Rate")  
         
         notification_hook = Observable(df.Time)   
         lines!(rpm_ax, notification_hook, Observable(df.IR), color=:blue, label="IR Measured")
@@ -164,10 +165,7 @@ function launch_gui()
         lines!(rpm_ax, notification_hook, Observable(df.Desired), color=:green, label="Desired")
         fig[1:2, 2] = Legend(fig, rpm_ax, "Freq", framevisible = false)
 
-        power_ax = Axis(fig[3, 1], 
-            backgroundcolor=:grey, xlabel="Time [s]", ylabel="Power [W]", title="Power", 
-            titlecolor=:white, xgridcolor = :white, ygridcolor = :white, xlabelcolor = :white, 
-            ylabelcolor = :white, xticklabelcolor = :white, yticklabelcolor = :white) 
+        power_ax = Axis(fig[3, 1], xlabel="Time [s]", ylabel="Power [W]", title="Power") 
         lines!(power_ax, notification_hook, Observable(df.InputMotorPower), color=:yellow, label="Input Motor Power")
         fig[3, 2] = Legend(fig, power_ax, "Power", framevisible = false)
         
@@ -176,6 +174,8 @@ function launch_gui()
     
         update_plot = function()
             time = running_time_in_seconds()
+            autolimits!(rpm_ax)
+            autolimits!(power_ax)
             xlims!(rpm_ax, (time - TimeDisplayWindow, time))
             xlims!(power_ax, (time - TimeDisplayWindow, time))
             notify(notification_hook)
@@ -184,14 +184,15 @@ function launch_gui()
 
     display_gui(win; blocking=false)
 
-    atexit(() -> set_motor_speed(0)) #Turn the Table off if julia exits
+    atexit(() -> set_motor_native_speed(0)) #Turn the Table off if julia exits
     
     while true
         isopen(deviceSerial) && readport(deviceSerial) do str
             if startswith(str, "Freq")
+                is_active() || return
                 irFreq = parse(Float64, str[5:end])
-                measure!(ir, irFreq)
-                #update_motor(irFreq) #Have IR Control Motor Speed
+                measure!(IR, irFreq)
+                update_motor(irFreq) #Have IR Control Motor Speed
             else
                 println("[Device]:$str")
             end
@@ -200,12 +201,13 @@ function launch_gui()
         isopen(gyroSerial) && readport(gyroSerial) do str
             data = split(str, ",")
             if length(data) > 2
+                is_active() || return
                 packet_num, Gx_DPS, Gy_DPS, Gz_DPS, Ax_g, Ay_g, Az_g, Mx_Gauss, My_Gauss, Mz_Gauss = parse.(Float64, data)
                 Gx_Hz, Gy_Hz, Gz_Hz = (Gx_DPS, Gy_DPS, Gz_DPS) ./ 360
                 
-                measure!(gyro, Gz_Hz)
-                update_motor(Gz_Hz) #Controlled via Gyro
-            else 
+                measure!(Gyro, Gz_Hz)
+                #update_motor(Gz_Hz) #Controlled via Gyro
+            else
                 println("[Gyro]:$str")
             end
         end

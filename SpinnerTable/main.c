@@ -161,11 +161,10 @@ void on_adc_sample(float value){
     bool wasTripped = value < IR_TRIP_COUNT;
     bool stateChange = wasTripped != ir_triggered;
     ir_triggered = wasTripped;
-    if(ir_state == 0)
-        Fast_Timer_A_setCounterValue(IR_TIMER_BASE, 0); //Start the clock
-
     if(stateChange){
-        if(++ir_state == 6){ //6 Different States Per Rev
+        if(ir_state++ == 0)
+                Fast_Timer_A_setCounterValue(IR_TIMER_BASE, 0); //Start the clock
+        if(ir_state == 6){ //6 Different States Per Rev
             ir_state = 0; //Reset
             write_Freq((ConversionFactorFreqForFreq / (double) Fast_Timer_A_getCounterValue(IR_TIMER_BASE)));
         }
