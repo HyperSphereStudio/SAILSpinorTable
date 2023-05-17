@@ -51,7 +51,7 @@ function launch_gui()
     runningTime = now()
     currentMotorValue = 0
     motorVoltage = InitMotorVoltage
-    controlInstrumentIndex = 1
+    controlInstrumentIndex = 0
 
     running_time_in_seconds() = Dates.value(now() - runningTime) * 1E-3
     measure!(name, v) = measurements[name] = v
@@ -72,7 +72,7 @@ function launch_gui()
     save_button = buttonwithimage("Save", GtkImage(icon_name = "document-save-as"))
     instrument_control_select = GtkComboBoxText()
     append!(instrument_control_select, "Gyro-Controlled", "IR-Controlled")
-    instrument_control_select.active = 0
+    instrument_control_select.active = controlInstrumentIndex
 
     append!(control_box, play_button, stop_button, save_button, instrument_control_select)
 
