@@ -12,6 +12,8 @@ const InitMotorVoltage = 21 #V
 
 comp_println(x...) = println("[Comp]:", x...)
 
+Base.append!(b::GtkWidget, items...) = foreach(x->push!(b, x), items)
+
 function create_plot(df, plot, running_time_in_seconds)
     set_theme!(theme_hypersphere())
     fig = Figure()
@@ -150,7 +152,6 @@ function launch_gui()
                     isopen(ports[i]) && return
                     ps = portSelectors[i] 
                     empty!(ps)
-                    
                     append!(ps, portList)
                 end, eachindex(ports))
     end
@@ -193,6 +194,8 @@ function launch_gui()
     atexit(() -> set_motor_native_speed(0)) #Turn the Table off if julia exits
     
     while true
+        try
+
         isopen(deviceSerial) && readport(deviceSerial) do str
             if startswith(str, "Freq")
                 is_active() || return
@@ -218,6 +221,11 @@ function launch_gui()
             end
         end
 
+        catch e
+            showerror(stdout, e)
+            close(deviceSerial)
+            close(gyroSerial)
+        end
         sleep(1E-2)
     end
 end
