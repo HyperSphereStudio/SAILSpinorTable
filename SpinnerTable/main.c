@@ -9,6 +9,7 @@
      1.3 - Motor ADC Input
      1.4 - Release Output
      2.5 - Motor Uart Tx
+     2.6 - Motor Uart Rx
 
     Regs:
      ADCMEM0 - Motor ADC Memory
@@ -29,7 +30,9 @@
 #define MOTOR_ADC_PORT ADC12_B_INPUT_A3 //Uses ADC Memory 0
 #define MOTOR_ADC_GPIO_PORT GPIO_PORT_P1, GPIO_PIN3
 #define MOTOR_ADC_OUTPUT ADC12_B_MEMORY_0
-#define MOTOR_UART_TX_PORT GPIO_PORT_P2, GPIO_PIN5
+#define MOTOR_UART_XX_PORT GPIO_PORT_P2
+#define MOTOR_UART_TX_PIN GPIO_PIN5
+#define MOTOR_UART_RX_PIN GPIO_PIN6
 #define MOTOR_UART_BASE EUSCI_A1_BASE
 
 #define RELEASE_GPIO_PORT GPIO_PORT_P1, GPIO_PIN4
@@ -87,7 +90,7 @@ void init_pc_uart(){
 }
 
 void init_motor_uart(){
-    GPIO_setAsPeripheralModuleFunctionOutputPin(MOTOR_UART_TX_PORT, GPIO_SECONDARY_MODULE_FUNCTION); //Enable UCA1TXD
+    GPIO_setAsPeripheralModuleFunctionOutputPin(MOTOR_UART_XX_PORT, MOTOR_UART_RX_PIN + MOTOR_UART_TX_PIN, GPIO_SECONDARY_MODULE_FUNCTION); //Enable UCA1TXD
 
     //Baud Rate of 19200 given SMCLK freq of 1Mhz for motor controller (Pololu, TReX Jr)
     EUSCI_A_UART_initParam init = { .clockPrescalar = 3,
@@ -213,6 +216,12 @@ __interrupt void TIMER1_A1_ISR(void) {
 void init_release(){
     GPIO_setAsOutputPin(RELEASE_GPIO_PORT);
     GPIO_setOutputLowOnPin(RELEASE_GPIO_PORT);
+}
+
+void set_motor_joint_mode(){
+    motor_uart_write(0xAF);
+    motor_uart_write(0x7B);
+    motor_uart_write(0x01);
 }
 
 int main(void) {
