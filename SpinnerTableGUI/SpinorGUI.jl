@@ -1,6 +1,6 @@
 using JuliaSAILGUI
 using Dates
-using JuliaSAILGUI: DataFrames, Gtk4, Observables, LibSerialPort, CSV, GLMakie
+using JuliaSAILGUI: DataFrames, Gtk4, Observables, LibSerialPort, CSV, GLMakie, GtkValueEntry
 
 const DeviceBaudRate = 115200
 const GyroBaudRate = 9600
