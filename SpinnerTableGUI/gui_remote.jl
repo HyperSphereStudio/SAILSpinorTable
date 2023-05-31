@@ -20,12 +20,9 @@ scriptname = ARGS[2]
 
 println("Compile System Image [true/false]?")
 if parse(Bool, readline())
-   eval(:(using JuliaSAILGUI)) 
-   println("Warming environment...")
-   println("Initializing Create Image!")
-   JuliaSAILGUI.run_test()   
    println("Compiling Image to $dllname")   
-   create_sysimage(; sysimage_path=dllname)
+   ENV["SYS_COMPILING"] = true
+   create_sysimage(["JuliaSAILGUI"]; sysimage_path=dllname, precompile_execution_file=scriptname)
 end 
     
 println("Creating System Image Executable File \"gui.bat\"")
