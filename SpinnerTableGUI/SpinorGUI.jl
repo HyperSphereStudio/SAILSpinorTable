@@ -2,18 +2,48 @@ using JuliaSAILGUI
 using Dates
 using JuliaSAILGUI: DataFrames, Gtk4, Observables, LibSerialPort, CSV, GLMakie
 
-const DeviceBaudRate = 115200
-const GyroBaudRate = 9600
-const InitMotorSpeed = 85
+#Adjustable Constants
+const BaudRate = 115200
+const InitMotorSpeed = 75
 const TimeDisplayWindow = 10
 const SampleRate = .25
 const MaxMotorCurrent = 5.0 #A
 const InitMotorVoltage = 20 #V
+const AverageMeasurementLength = 3
 
-comp_println(x...) = println("[Comp]:", x...)
+#Packet Types
+const AccelerationPacket = 1
+const ComputerPrint = 2
+const SetTxState = 3
+const ControllerWrite = 4
+const ControllerRead = 5
+const Cut = 6
+
+#Tx States
+const TxReadyIdle::UInt8 = 1
+const TxGetData::UInt8 = 2
+
+#Controller Commands
+const ControllerSetSpeed::UInt8 = 0xC2
 
 RunningTime = now()
 runningtime() = Dates.value(now() - RunningTime) * 1E-3
+comp_println(x...) = println("[Comp]:", x...)
+JuliaSAILGUI.readport(f::Function, s::SimpleConnection) = readport(f, s.port)
+function JuliaSAILGUI.send(s::SimpleConnection, type::Integer, args...)
+    s.write_buffer.ptr = 1
+    s.write_buffer.size = 0
+    writestd(x::T) where T <: Number = write(s.write_buffer, hton(x)) 
+    writestd(x) = write(s.write_buffer, x) 
+    writestd(JuliaSAILGUI.MAGIC_NUMBER)
+    writestd(UInt8(sum(sizeof, args)))
+    writestd(UInt8(type))
+    writestd(UInt8(s.packet_count))
+    foreach(writestd, args)
+    writestd(JuliaSAILGUI.TAIL_MAGIC_NUMBER)
+    s.packet_count += 1
+    LibSerialPort.sp_nonblocking_write(s.port.sp.ref, pointer(s.write_buffer.data), s.write_buffer.ptr - 1)
+end
 
 function create_plot(df, plot, gui)
     set_theme!(theme_hypersphere())
@@ -32,7 +62,6 @@ function create_plot(df, plot, gui)
     end
     gui[:TimeData] = time_data
     
-    lines!(rpm_ax, time_data, df.IR, color=:blue, label="IR Measured")
     lines!(rpm_ax, time_data, df.Gyro, color=:red, label="Gyro Measured")
     lines!(rpm_ax, time_data, df.Desired, color=:green, label="Desired")
     fig[1:2, 2] = Legend(fig, rpm_ax, "Freq", framevisible = false)
@@ -49,19 +78,18 @@ function create_gui(df, motorVoltage, motorControl, motorSpeed)
     back_box = GtkBox(:v, 50)
 
     select_box = GtkBox(:v)
-    device_port_select = GtkComboBoxText()
-    gyro_port_select = GtkComboBoxText()
+    receiver_port_select = GtkComboBoxText()
+
     motor_voltage_entry = GtkEntry(input_purpose = Gtk4.InputPurpose_NUMBER)
     motor_control_entry = GtkEntry(input_purpose = Gtk4.InputPurpose_NUMBER)
-
     Observables.ObservablePair(motor_voltage_entry, motorVoltage)
     Observables.ObservablePair(motor_control_entry, motorControl)
 
     instrument_control_select = GtkComboBoxText()
-    append!(instrument_control_select, "Gyro-Controlled", "IR-Controlled", "Manual-Controlled")
+    append!(instrument_control_select, "Gyro-Controlled", "Manual-Controlled")
     instrument_control_select.active = 0
-    append!(select_box, makewidgetswithtitle([device_port_select, gyro_port_select, instrument_control_select, motor_voltage_entry], ["Device Port", "Gyro Port", "Mode", "Motor Voltage [V]"]))
-    append!(gui, :DevicePort => device_port_select, :GyroPort => gyro_port_select, :Instrument => instrument_control_select)
+    append!(select_box, makewidgetswithtitle([receiver_port_select, instrument_control_select, motor_voltage_entry], ["Reciever Port", "Mode", "Motor Voltage [V]"]))
+    append!(gui, :Port => receiver_port_select, :Instrument => instrument_control_select)
 
     control_box = GtkBox(:v)
     play_button = buttonwithimage("Play", GtkImage(icon_name = "media-playback-start"))
@@ -75,14 +103,14 @@ function create_gui(df, motorVoltage, motorControl, motorSpeed)
     Observables.ObservablePair(motor_speed_adjuster, motorSpeed)
 
     release_button = GtkButton("Release")
+    disconnect_button = GtkButton("Disconnect")
 
-    append!(back_box, select_box, makewidgetswithtitle([control_box, motor_speed_spin_button], ["Control", "Motor Frequency"])..., release_button)
-    append!(gui, :Release => release_button, :MotorControl => motor_speed_adjuster)
+    append!(back_box, select_box, makewidgetswithtitle([control_box, motor_speed_spin_button], ["Control", "Motor Frequency"])..., release_button, disconnect_button)
+    append!(gui, :Release => release_button, :Disconnect => disconnect_button, :MotorControl => motor_speed_adjuster)
 
     plot = GtkGLArea(hexpand=true, vexpand=true)
 
     motor_freq_label = GtkLabel(""; hexpand=true)
-    Gtk4.markup(motor_freq_label, "<b>Motor Frequency:0 Hz</b>")
 
     win = GtkWindow("Spinner Table")
     grid = GtkGrid(column_homogeneous=true)
@@ -100,133 +128,139 @@ function create_gui(df, motorVoltage, motorControl, motorSpeed)
 end
 
 function gui_main()
-    motorFreqLabel, portTimer, motorSampleTimer = fill(nothing, 3)
-    df = DataFrame(Time=Float32[], Gyro=Float32[], IR=Float32[], Desired=Float32[], InputMotorPower=Float32[])
+    df = DataFrame(Time=Float32[], Gyro=Float32[], Desired=Float32[], InputMotorPower=Float32[])
     measurements = zeros(size(df, 2))
-    Time, Gyro, IR, Desired, InputMotorPower = 1:size(df, 2)
+    Time, Gyro, Desired, InputMotorPower = 1:size(df, 2)
 
     motorVoltage = Observable(Float64(InitMotorVoltage))
     motorControl = Observable(0)
     motorSpeed = Observable(0.0)
-
-    measure!(name, v) = measurements[name] = v
-    measure(name) = measurements[name]
+    measurementMode = Observable(0)
+    lastDirection = 1
+    lastSpeed = 0
+    rx = SimpleConnection(MicroControllerPort(:Reciever, BaudRate, nothing), (h) -> comp_println("Packet Corruption! $(h.Type)"))
     gui = create_gui(df, motorVoltage, motorControl, motorSpeed)
-
-    deviceSerial = MicroControllerPort(:Device, DeviceBaudRate, DelimitedReader("\r\n"), on_disconnect = () -> gui[:DevicePort].active = -1)
-    gyroSerial = MicroControllerPort(:Gyro, GyroBaudRate, DelimitedReader("\r\n"), on_disconnect = () -> gui[:GyroPort].active = -1)
-    
-    portSelectors = [gui[:DevicePort], gui[:GyroPort]]
-    ports = [deviceSerial, gyroSerial]    
-
+   
+    measure(name) = measurements[name]
+    measure!(name, v) = measurements[name] = v
     getinputmotorpower() = motorControl[] / 127 * motorVoltage[] * MaxMotorCurrent
+    
+    motorSampleTimer = HTimer(0, SampleRate; start=false) do t
+        measure!(Time, runningtime())
+        push!(df, measurements)
+        notify(gui[:TimeData])
+    end
+
+    measureTimer = HTimer(4, .5; start=false) do t 
+        s = measure(measurementMode[] + 2)
+        d = measure(Desired)
+        v = motorControl[]
+        Gtk4.markup(gui[:Freq], "<b>Measured:$(round(s, digits=3)) Hz</b>")
+        measurementMode[] == 1 && return                        #Skip on manual mode
+        comp_println("Measured: $s Hz. Desired: $d Hz")
+       
+        current = abs(s - d)
+        last = abs(lastSpeed - d)
+        if current > .05
+            if s > d
+                direction = -1                  #Wont cause motor stalling
+            else
+                direction = lastDirection       #Go up to desired without stalling
+                current > last && (direction *= -1)
+                lastSpeed = s
+            end
+            motorControl[] += direction
+            lastDirection = direction
+        end
+    end
 
     function reset()
         global RunningTime
-        motorSpeed[] = 0
+        (motorSpeed[] != 0) && (motorSpeed[] = 0)
         empty!(df)
         RunningTime = now()
         notify(gui[:TimeData])
     end
-
+    
     function start()
-        isopen(deviceSerial) || (println("Motor Port Not Open!"); return)
         reset()
-        motorSampleTimer = Timer(0; interval=SampleRate) do t
-                                    measure!(Time, runningtime())
-                                    push!(df, measurements)
-                                    notify(gui[:TimeData])
-                                    Gtk4.markup(gui[:Freq], "<b>Measured: $(measure(Desired)) Hz</b>")
-                                end
+        isopen(rx) || return
+        resume(motorSampleTimer)
+        resume(measureTimer)
+        lastDirection = 1
+        lastSpeed = 0
         motorControl[] = InitMotorSpeed                    
         motorSpeed[] = 1.5
+        send(rx, SetTxState, TxGetData)                             #Send Packets
     end
 
-    function update_com_ports()
-        portList = get_port_list()
-        foreach(eachindex(ports)) do i
-                    isopen(ports[i]) && return
-                    ps = portSelectors[i] 
-                    empty!(ps)
-                    append!(ps, portList)
-                end
+    function stop()
+        pause(motorSampleTimer)
+        pause(measureTimer)
+        isopen(rx) && send(rx, SetTxState, TxReadyIdle)             #Stop Sending Packets
     end
-
-    set_port(port, selector) = setport(port, selector[]) && reset()
-
-    Timer(0; interval=1) do t 
-            v = motorControl[]
-            measurement_mode = gui[:Instrument].active
-            (v == 0 || measurement_mode == 2) && return #Skip on manual mode or not moving
-            m = measure(measurement_mode + 2)
-            v += cmp(measure(Desired), m)
-            comp_println("Measured: $m Hz. Desired: $(measure(Desired)) Hz")
-            motorControl[] = v
-        end
 
     function save_to_file(file)
         endswith(file, ".csv") || (file *= ".csv")
-        println("Saving Run To File to $file")
+        comp_println("Saving Run To File to $file")
         CSV.write(file, df)
     end
 
-    signal_connect(_-> (motorControl[] = 0; exit(0)), gui[:Window], :close_request)
-    on(motorControl) do v
-        isopen(deviceSerial) || (println("Motor Port Not Open!"); return)
+    atexit(() -> motorControl[] = 0)                                               #Silently turn off table if its still on 
+    signal_connect(_ -> exit(0), gui[:Window], :close_request)                     #Kill Program on GUI close
+    Observables.ObservablePair(gui[:Instrument], measurementMode)
+    on(rx) do c
+        c || (gui[:Port].active = -1)
+        comp_println("Rx Connected: $c")
+    end
+    on(motorControl; priority=1) do v
+        isopen(rx) || (comp_println("Rx Not Connected!"); return)
         v = clamp(v, 0, 126)
         measure!(InputMotorPower, getinputmotorpower())
-        comp_println("Set Motor Speed $v")
-        write(deviceSerial, UInt8(v)) 
-        motorControl.val = v                                            #Set without notification
-        v == 0 && isopen(motorSampleTimer) && close(motorSampleTimer)   #Stop Sampling
+        comp_println("Set Motor Value $v")
+        send(rx, ControllerWrite, ControllerSetSpeed, UInt8(v))                                         
+        motorControl.val = v                                                                            #Set without notification
+        v == 0 && stop()
     end
     on(motorSpeed) do v
+        comp_println("Set Motor Speed:$v Hz")
         measure!(Desired, v)
         v == 0 && (motorControl[] = 0)
     end
-    on(w -> @async(set_port(deviceSerial, w)), gui[:DevicePort])
-    on(w -> @async(set_port(gyroSerial, w)), gui[:GyroPort]) #Async to put task at end of main
+    on(gui[:Port]) do w
+        @async begin
+            w[] === nothing && return
+            comp_println("Rx Port = $(w[])")
+            setport(rx, w[]) && reset()
+        end
+    end
     on(_ -> save_dialog(save_to_file, "Save data file as...", nothing, ["*.csv"]), gui[:Save])
     on(_ -> @async(start()), gui[:Play])
     on(_ -> @async(motorSpeed[] = 0), gui[:Stop])
+    on(_ -> @async(close(rx)), gui[:Disconnect])
     on(gui[:Release]) do w
         comp_println("Releasing!")
-        comp_println("Stopping Release")
+        @async(send(rx, Cut))
     end
-          
-    portTimer = Timer(_ -> update_com_ports(), 0; interval=2)
-    atexit(() -> motorControl[] = 0)     #Turn the Table off if julia exits
-    
+    on(PortsObservable; update=true) do pl
+        isopen(rx) && return
+        empty!(gui[:Port])
+        append!(gui[:Port], pl)
+    end                                                   
     while true #GUI Loop
         try
-
-            isopen(deviceSerial) && readport(deviceSerial) do str
-                if startswith(str, "Freq")
-                    (measure(Desired) != 0) || return
-                    irFreq = parse(Float64, str[5:end])
-                    measure!(IR, irFreq)
-                else
-                    println("[Device]:$str")
-                end
-            end
-        
-            isopen(gyroSerial) && readport(gyroSerial) do str
-                data = split(str, ",")
-                if length(data) > 2
-                    (measure(Desired) != 0) || return
-                    packet_num, Gx_DPS, Gy_DPS, Gz_DPS, Ax_g, Ay_g, Az_g, Mx_Gauss, My_Gauss, Mz_Gauss = parse.(Float64, data)
-                    Gx_Hz, Gy_Hz, Gz_Hz = (Gx_DPS, Gy_DPS, Gz_DPS) ./ 360
+            isopen(rx) && readport(rx) do (h, io)
+                if h.Type == AccelerationPacket
+                    Gx, Gy, Gz, Ax, Ay, Az, Mx, My, Mz = readn(io, Float32, 9)
+                    Gx_Hz, Gy_Hz, Gz_Hz = (Gx, Gy, Gz) ./ 360
                     measure!(Gyro, Gz_Hz)
-                else
-                    println("[Gyro]:$str")
+                elseif h.Type == ComputerPrint
+                    print(read(io, String))
                 end
             end
-
         catch e
             showerror(stdout, e)
-            close(deviceSerial)
-            close(gyroSerial)
-        end
+        end    
         sleep(1E-2)
     end
 end

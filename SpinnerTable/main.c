@@ -112,7 +112,7 @@ __interrupt void USCI_A0_ISR(void) {
         case USCI_UART_UCRXIFG: {
                 uint8_t k = EUSCI_A_UART_receiveData(UART_BACKCHANNEL_BASE);
                 if(k <= 127){
-                    motor_uart_write(0xCA);
+                    motor_uart_write(0xC2);
                     motor_uart_write(k);
                     ir_state = 0; //Reset the IR state so that Freq is not miscalculated
                 }else{
@@ -221,7 +221,9 @@ void init_release(){
 void set_motor_joint_mode(){
     motor_uart_write(0xAF);
     motor_uart_write(0x7B);
-    motor_uart_write(0x01);
+    motor_uart_write(true);
+    motor_uart_write(0x55);
+    motor_uart_write(0x2A);
 }
 
 int main(void) {
@@ -240,9 +242,15 @@ int main(void) {
 
     while(true){
 #ifdef DEBUG
-        if(cycle_count++ % 1000 == 0)
+        if(cycle_count++ % 1000 == 0){
             println("HeartBeat: %u", cycle_count);
+         /* set_motor_joint_mode();
+            motor_uart_write(0x9F);
+            motor_uart_write(0x7B);
+            println("mode:%b", EUSCI_A_UART_receiveData(MOTOR_UART_BASE));*/
+        }
 #endif
+
     }
 }
 

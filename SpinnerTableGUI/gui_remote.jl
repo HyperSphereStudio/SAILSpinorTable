@@ -22,7 +22,7 @@ println("Compile System Image [true/false]?")
 if parse(Bool, readline())
    println("Compiling Image to $dllname")   
    ENV["SYS_COMPILING"] = true
-   create_sysimage(["JuliaSAILGUI"]; sysimage_path=dllname, precompile_execution_file=scriptname)
+   create_sysimage(["JuliaSAILGUI"]; sysimage_path=dllname)
 end 
     
 println("Creating System Image Executable File \"gui.bat\"")
