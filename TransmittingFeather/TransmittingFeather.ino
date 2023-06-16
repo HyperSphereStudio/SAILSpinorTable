@@ -23,7 +23,7 @@ void radio_print(const char* fmt, ...);
 #include <devices/SimpleFeather.h>
 
 #define DeviceID 1
-#define NodeTimeOut 10
+#define NodeTimeOut 50
 
 // The SFE_LSM9DS1 library requires both Wire and SPI to be
 // included BEFORE including the SparkFunLSM9DS1 library.
@@ -34,16 +34,18 @@ void radio_print(const char* fmt, ...);
 #define RFM95_Slave 8
 #define RFM95_Reset 4
 #define RFM95_Interrupt 3
-#define RF95_FREQ 915.0  //Must match to Txer
+#define RF95_FREQ 915.0
+#define RF95_POWER 20
 #define CutPin 5
 
-enum PacketType{
+enum PacketType : uint8_t{
   AccelerationPacket = 1,
-  ComputerPrint = 2,
-  SetTxState = 3,
-  ControllerWrite = 4,
-  ControllerRead = 5,
-  Cut = 6
+  ComputerPrint,
+  SetTxState,
+  ControllerWrite,
+  ControllerRead,
+  Cut,
+  Received
 };
 
 enum TransmitterState : byte{
@@ -74,7 +76,7 @@ void radio_print(const char* fmt, ...){
 void setup() {
   pinMode(CutPin, OUTPUT);
 
-  if(!tx.Initialize(RF95_FREQ, 23)){
+  if(!tx.Initialize(RF95_FREQ, RF95_POWER)){
     while (!Serial) { delay(5); }
     Serial.printf("LoRa Radio Initialization Failed!");
     return;
@@ -84,20 +86,11 @@ void setup() {
   Wire.begin();
   if (!imu.begin())
     state = TransmitterState::LSM9DS1Error;
+  imu.setGyroScale(2000);  
 
   cutTimer.callback = make_lambda<void, Timer&>([](Timer& t, void* args){ digitalWrite(CutPin, LOW); }, (void*) nullptr);
 
   packetTimer.callback = make_lambda<void, Timer&>([](Timer& t, void* args){
-    // Update the sensor values whenever new data is available
-    if (imu.gyroAvailable())
-      imu.readGyro();
-
-    if (imu.accelAvailable())
-      imu.readAccel();
-
-    if (imu.magAvailable())
-      imu.readMag();
-
     float Gx = imu.calcGyro(imu.gx);
     float Gy = imu.calcGyro(imu.gy);
     float Gz = imu.calcGyro(imu.gz);
@@ -111,7 +104,18 @@ void setup() {
   }, (void*) nullptr);
 }
 
-void loop() { Yield(); }
+void loop() { 
+  // Update the sensor values whenever new data is available
+  if (imu.gyroAvailable())
+    imu.readGyro();
+
+  if (imu.accelAvailable())
+    imu.readAccel();
+
+  if (imu.magAvailable())
+    imu.readMag();
+  Yield(); 
+}
 
 void TxRxRadioConnection::onPacketReceived(MultiPacketHeader header, IOBuffer &io){
     switch(header.type){
@@ -119,15 +123,14 @@ void TxRxRadioConnection::onPacketReceived(MultiPacketHeader header, IOBuffer &i
         auto new_state = io.ReadStd<TransmitterState>();
         if(new_state == TransmitterState::ReadyIdle){
           packetTimer.Stop();
-          println("Stop Acc Packets");
           state = TransmitterState::ReadyIdle;
         }else if(new_state == TransmitterState::GetData){
             if(state == TransmitterState::LSM9DS1Error)
-              println("Failed to communicate with LSM9DS1.\nDouble-check wiring.");
+              println("Failed to communicate with LSM9DS1. Double-check wiring.");
             else{
-               println("Start Acc Packets");
                packetTimer.Start();
                state = TransmitterState::GetData;
+               println("Data Start");
             }
         }
         break;

@@ -19,22 +19,23 @@ void radio_print(const char* fmt, ...);
 #include <devices/SimpleFeather.h>
 
 #define DeviceID 2
-#define NodeTimeOut 10
+#define NodeTimeOut 50
 
 #include <SPI.h>
 #include <RH_RF95.h>
 #define RFM95_Slave 8
 #define RFM95_Reset 4
 #define RFM95_Interrupt 3
-#define RF95_FREQ 915.0  //Must match to Txer
+#define RF95_FREQ 915.0
+#define RF95_POWER 20
 
-enum PacketType{
+enum PacketType : uint8_t{
   AccelerationPacket = 1,
-  ComputerPrint = 2,
-  SetTxState = 3,
-  ControllerWrite = 4,
-  ControllerRead = 5,
-  Cut = 6
+  ComputerPrint,
+  SetTxState,
+  ControllerWrite,
+  ControllerRead,
+  Cut
 };
 
 struct ExternalSerialIO : public IO{
@@ -62,23 +63,26 @@ void radio_print(const char* fmt, ...){
 }
 
 void setup() {
+  Serial.begin(19200);
   Serial1.begin(19200); //Controller baud
 
-  if(!cntrl.Initialize(RF95_FREQ, 23)){
+  if(!cntrl.Initialize(RF95_FREQ, RF95_POWER)){
     while (!Serial) { delay(5); }
     Serial.printf("LoRa Radio Initialization Failed!");
     return;
   }
+
+  println("LoRa Radio Init Ok");
 }
 
 void loop() { 
   Yield();
-  if(controller.BytesAvailable() > 0){
-     cntrl.SendData(ControllerRead, lambda(void, (IOBuffer& io), {
-        while(controller.BytesAvailable() > 0)
-          controller.WriteTo(&io);    //Send the data to the Rx
-     }));
-  } 
+  /*if(controller.BytesAvailable() > 0){
+    cntrl.SendData(ControllerRead, lambda(void, (IOBuffer& io), {
+      while(controller.BytesAvailable() > 0)
+        controller.WriteTo(&io);    //Send the data to the Rx
+    }));
+  } */
 }
 
 void CntrlRxRadioConnection::onPacketReceived(MultiPacketHeader header, IOBuffer& io){

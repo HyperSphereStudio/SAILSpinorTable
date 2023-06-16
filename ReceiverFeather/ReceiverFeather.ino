@@ -23,22 +23,23 @@ void serial_print(const char* fmt, ...);
 #include <devices/SimpleFeather.h>
 
 #define DeviceID 0
-#define NodeTimeOut 10
+#define NodeTimeOut 50
 
 #include <SPI.h>
 #include <RH_RF95.h>
 #define RFM95_Slave 8
 #define RFM95_Reset 4
 #define RFM95_Interrupt 3
-#define RF95_FREQ 915.0  //Must match to Txer
+#define RF95_FREQ 915.0
+#define RF95_POWER 20
 
-enum PacketType{
+enum PacketType : uint8_t{
   AccelerationPacket = 1,
-  ComputerPrint = 2,
-  SetTxState = 3,
-  ControllerWrite = 4,
-  ControllerRead = 5,
-  Cut = 6
+  ComputerPrint,
+  SetTxState,
+  ControllerWrite,
+  ControllerRead,
+  Cut
 };
 
 struct RxCompConnection : public SerialConnection{
@@ -66,7 +67,7 @@ void setup() {
   Serial.begin(115200);
   while (!Serial) { delay(5); }
   
-  if(rx.Initialize(RF95_FREQ, 23))
+  if(rx.Initialize(RF95_FREQ, RF95_POWER))
     println("LoRa Radio Init Ok!");
   else 
     println("LoRa Radio Init Failed!");
@@ -95,6 +96,9 @@ void TxRxRadioConnection::onPacketReceived(MultiPacketHeader header, IOBuffer &i
     case PacketType::AccelerationPacket:
     case PacketType::ControllerRead:
       computer.SendData(header.type, &io, header.size);   
-      break;
+      break;  
+    default:
+      println("Invalid Packet!");
+      break;  
   }
 }

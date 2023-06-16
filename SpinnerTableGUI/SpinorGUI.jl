@@ -41,7 +41,7 @@ function JuliaSAILGUI.send(s::SimpleConnection, type::Integer, args...)
     writestd(UInt8(s.packet_count))
     foreach(writestd, args)
     writestd(JuliaSAILGUI.TAIL_MAGIC_NUMBER)
-    s.packet_count += 1
+    s.packet_count += UInt8(1)
     LibSerialPort.sp_nonblocking_write(s.port.sp.ref, pointer(s.write_buffer.data), s.write_buffer.ptr - 1)
 end
 
@@ -197,7 +197,8 @@ function gui_main()
     function stop()
         pause(motorSampleTimer)
         pause(measureTimer)
-        isopen(rx) && send(rx, SetTxState, TxReadyIdle)             #Stop Sending Packets
+        isopen(rx) && send(rx, SetTxState, TxReadyIdle)
+        @async(isopen(rx) && send(rx, ControllerWrite, ControllerSetSpeed, UInt8(0)))  #Just in case its missed
     end
 
     function save_to_file(file)
@@ -215,10 +216,10 @@ function gui_main()
     end
     on(motorControl; priority=1) do v
         isopen(rx) || (comp_println("Rx Not Connected!"); return)
-        v = clamp(v, 0, 126)
+        v = round(clamp(v, 0, 126))
         measure!(InputMotorPower, getinputmotorpower())
         comp_println("Set Motor Value $v")
-        send(rx, ControllerWrite, ControllerSetSpeed, UInt8(v))                                         
+        send(rx, ControllerWrite, ControllerSetSpeed, UInt8(v))                                        
         motorControl.val = v                                                                            #Set without notification
         v == 0 && stop()
     end
@@ -256,6 +257,10 @@ function gui_main()
                     measure!(Gyro, Gz_Hz)
                 elseif h.Type == ComputerPrint
                     print(read(io, String))
+                elseif h.Type == ControllerRead
+                    println("Controller Read!")
+                else
+                    println("Invalid Packet!")
                 end
             end
         catch e
