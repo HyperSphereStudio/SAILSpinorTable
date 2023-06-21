@@ -7,19 +7,20 @@
    06/12/23   JCB      2.0     New Packet Protocol, 3 Feather Communication & Control, Julia Interface
  *********************************************************************/
 
-#include <SimpleConnection.h>
-#include <SimpleTimer.h>
-
 /*Override std print to divert to Computer
   Put this before the feather lib so that we can read errors from device */
 void radio_print(const char* fmt, ...);
-#undef print
-#define print(fmt, ...) radio_print("[Cntrl]:" fmt, ##__VA_ARGS__)
+#define print(fmt, ...) radio_print(fmt, ##__VA_ARGS__)
+#define printct(fmt, ...) print("[Cntrl]:" fmt, ##__VA_ARGS__)
+#define printctln(fmt, ...) println("[Cntrl]:" fmt, ##__VA_ARGS__)
 
+#include <SimpleConnection.h>
+#include <SimpleTimer.h>
 #include <devices/SimpleFeather.h>
 
-#define DeviceID 2
-#define NodeTimeOut 50
+#define Retries 5
+#define RetryTimeOut 50
+#define NodeTimeout 10
 
 #include <SPI.h>
 #include <RH_RF95.h>
@@ -27,7 +28,7 @@ void radio_print(const char* fmt, ...);
 #define RFM95_Reset 4
 #define RFM95_Interrupt 3
 #define RF95_FREQ 915.0
-#define RF95_POWER 20
+#define RF95_POWER 23
 
 enum PacketType : uint8_t{
   AccelerationPacket = 1,
@@ -38,41 +39,40 @@ enum PacketType : uint8_t{
   Cut
 };
 
-struct ExternalSerialIO : public IO{
-    int WriteByte(uint8_t b) final { return Serial1.write(b); }
-    int WriteBytes(void *ptr, int nbytes) final { return Serial1.write((uint8_t*) ptr, nbytes); }
-    int ReadByte() final { return Serial1.read(); }
-    int ReadBytesUnlocked(void *ptr, int buffer_size) final { return Serial1.readBytes((char*) ptr, buffer_size); }
-    int BytesAvailable() final { return Serial1.available(); }
+enum Device : uint8_t{
+  Rxer = 0,
+  Txer,
+  Ctrlr
 };
 
 struct CntrlRxRadioConnection : public RadioConnection{
-  CntrlRxRadioConnection() : RadioConnection(DeviceID, NodeTimeOut, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
-  void onPacketReceived(MultiPacketHeader header, IOBuffer& io) final;
-  void onPacketCorrupted(MultiPacketHeader header) final{}
+  CntrlRxRadioConnection() : RadioConnection(Ctrlr, Retries, RetryTimeOut, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
+    void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
+  void onPacketCorrupted(PacketInfo& info) final{}
 };
 
 CntrlRxRadioConnection cntrl;
-ExternalSerialIO controller;
+StreamIO controller(Serial1);
 
 void radio_print(const char* fmt, ...){
   va_list args;
   va_start(args, fmt);
-  cntrl.SendData(PacketType::ComputerPrint, lambda(void, (IOBuffer& io, char* fmt, va_list v), io.vPrintf(fmt, v)), (char*) fmt, args);
+  define_local_lambda(lam, capture(=, &args), void, (IOBuffer& io), io.vPrintf((char*) fmt, args));
+  cntrl.SendData(Rxer, PacketType::ComputerPrint, lam);
   va_end(args);
 }
 
 void setup() {
-  Serial.begin(19200);
   Serial1.begin(19200); //Controller baud
 
-  if(!cntrl.Initialize(RF95_FREQ, RF95_POWER)){
+  if(!cntrl.Initialize(RF95_FREQ, RF95_POWER, Range::Short)){
     while (!Serial) { delay(5); }
     Serial.printf("LoRa Radio Initialization Failed!");
     return;
   }
 
-  println("LoRa Radio Init Ok");
+  cntrl.Start();
+  printctln("LoRa Radio Init Ok");
 }
 
 void loop() { 
@@ -85,10 +85,11 @@ void loop() {
   } */
 }
 
-void CntrlRxRadioConnection::onPacketReceived(MultiPacketHeader header, IOBuffer& io){
-  switch(header.type){
+void CntrlRxRadioConnection::onPacketReceived(PacketInfo& info, IOBuffer& io){
+  switch(info.Type){
     case ControllerWrite:
-      io.WriteTo(controller, header.size);    //Forward to the controller
+      io.WriteTo(controller, info.Size);    //Forward to the controller
+      printctln("Write!");
       break;
   }
 }
