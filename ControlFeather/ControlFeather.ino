@@ -1,22 +1,22 @@
 /**********************************************************************
    NAME: ControlFeather.ino
-   PURPOSE: Spin Table - Control the spin table (flow commands through/from).
+   PURPOSE: Spin Table - Control the spin table (flow commands through/from the Pololu).
    DEVELOPMENT HISTORY:
      Date    Author  Version            Description Of Change
    --------  ------  -------  ---------------------------------------
-   06/12/23   JCB      2.0     New Packet Protocol, 3 Feather Communication & Control, Julia Interface
+   06/12/23   JCB      2.0     3Feather with Medium Level Network Library (Simple) Implementation.
  *********************************************************************/
 
-/*Override std print to divert to Computer
-  Put this before the feather lib so that we can read errors from device */
+/*Override std print to divert to computer
+  Put this before the feather lib so that we can read errors from device code*/
 void radio_print(const char* fmt, ...);
 #define print(fmt, ...) radio_print(fmt, ##__VA_ARGS__)
 #define printct(fmt, ...) print("[Cntrl]:" fmt, ##__VA_ARGS__)
 #define printctln(fmt, ...) println("[Cntrl]:" fmt, ##__VA_ARGS__)
 
-#include <SimpleConnection.h>
-#include <SimpleTimer.h>
-#include <devices/SimpleFeather.h>
+#include <SimpleConnection.hpp>
+#include <SimpleTimer.hpp>
+#include <devices/SimpleFeather.hpp>
 
 #define Retries 3
 #define NodeTimeout 50
@@ -45,17 +45,22 @@ enum Device : uint8_t{
   DeviceCount
 };
 
+
+// Implementation of a feather radio connection which provides Time Divison Multiplexor Access and other tools to minimize error & maximize transmission speed
 struct CntrlRxRadioConnection : public RadioConnection{
   CntrlRxRadioConnection() : RadioConnection(Ctrlr, DeviceCount, NodeTimeout, Retries, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
   void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
   void onPacketCorrupted(PacketInfo& info) final{}
-  bool HandlePacket(PacketInfo &info, IOBuffer &io) override;
+  bool HandlePacket(PacketInfo &info, IOBuffer &io) final;
 };
 
 CntrlRxRadioConnection cntrl;
-StreamIO controller(Serial1);
+StreamIO controller(Serial1);	//Stream Wrapper over the Controller UART
+
+//Used to control the motor if the Rx loses connection. Itll automatically stop the motor after 2.5 s
 Timer packetTimer(true, 2500);
 
+//Simple::Printf implementation stream to Rx
 void radio_print(const char* fmt, ...){
   va_list args;
   va_start(args, fmt);
@@ -64,9 +69,14 @@ void radio_print(const char* fmt, ...){
   va_end(args);
 }
 
-void setup() {
-  Serial1.begin(19200); //Controller baud
+void stop_motor(){
+	controller.Write((int8_t) 0xC2, (int8_t) 0);
+}
 
+void setup() {
+  //The controller is connected to Serial1
+  Serial1.begin(19200); //Controller baud
+   
   if(!cntrl.Initialize(RF95_FREQ, RF95_POWER, Range::Short)){
     while (!Serial) { delay(5); }
     Serial.printf("LoRa Radio Initialization Failed!");
@@ -74,17 +84,20 @@ void setup() {
   }
 
   packetTimer.callback = make_static_lambda(void, (Timer& t), {
-    controller.Write((int8_t) 0xC2, (int8_t) 0);  //Stop
+    stop_motor();
     printctln("Motor Emergency Stop!");
   });
   
+  //Listen to the port
   cntrl.Start();
-  packetTimer.Start();
+  packetTimer.Start();	//Start the timer
   printctln("LoRa Radio Init Ok");
 }
 
-void loop() { 
+void loop() {
+  //Update connections & timers	
   Yield();
+  
   /*if(controller.BytesAvailable() > 0){
     cntrl.SendData(ControllerRead, lambda(void, (IOBuffer& io), {
       while(controller.BytesAvailable() > 0)
@@ -93,15 +106,16 @@ void loop() {
   } */
 }
 
+//Method called when a packet from the Feather Connection Pool is received
 void CntrlRxRadioConnection::onPacketReceived(PacketInfo& info, IOBuffer& io){
   switch(info.Type){
     case ControllerWrite:
-      io.WriteTo(controller, info.Size);    //Forward to the controller
+      io.WriteTo(controller, info.Size);    //Forward commands from the Rx to the controller
       break;
   }
 }
 
 bool CntrlRxRadioConnection::HandlePacket(PacketInfo &info, IOBuffer &io){
   packetTimer.Reset();
-  return RadioConnection::HandlePacket(info, io);
+  return RadioConnection::HandlePacket(info, io);	//Let the default packet handler figure out how to handle internal packets
 }

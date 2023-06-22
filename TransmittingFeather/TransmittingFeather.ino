@@ -8,7 +8,7 @@
    --------  ------  -------  ---------------------------------------
    04/12/23   KOO      1.0     Code for basic radio communication of IMU data
    04/24/23   KOO      1.1     Updated to transmit measured IMU data
-   06/13/23   JCB      2.0     New Packet Protocol, 3 Feather Communication & Control, Julia Interface
+   06/12/23   JCB      2.0     3Feather with Medium Level Network Library (Simple) Implementation.
  *********************************************************************/
 
 /*Override std print to divert to Computer
@@ -19,9 +19,9 @@ void radio_print(const char* fmt, ...);
 #define printtx(fmt, ...) print("[Tx]:" fmt, ##__VA_ARGS__)
 #define printtxln(fmt, ...) println("[Tx]:" fmt, ##__VA_ARGS__)
 
-#include <SimpleConnection.h>
-#include <SimpleTimer.h>
-#include <devices/SimpleFeather.h>
+#include <SimpleConnection.hpp>
+#include <SimpleTimer.hpp>
+#include <devices/SimpleFeather.hpp>
 
 #define Retries 3
 #define NodeTimeout 50
@@ -62,6 +62,7 @@ enum TransmitterState : byte{
   LSM9DS1Error = 3
 };
 
+//Implementation of a feather radio connection which provides Time Divison Multiplexor Access and other tools to minimize error & maximize transmission speed
 struct TxRxRadioConnection : public RadioConnection{
   TxRxRadioConnection() : RadioConnection(Txer, DeviceCount, NodeTimeout, Retries, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
   void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
@@ -78,6 +79,7 @@ TxRxRadioConnection tx;
 TransmitterState state = TransmitterState::None;
 Timer packetTimer(true, 200), cutTimer(false, 1000);
 
+//Simple::Printf implementation stream to Rx
 void radio_print(const char* fmt, ...){
   va_list args;
   va_start(args, fmt);
@@ -88,6 +90,7 @@ void radio_print(const char* fmt, ...){
 
 void setup() {
   pinMode(CutPin, OUTPUT);
+  digitalWrite(CutPin, LOW);
 
   if(!tx.Initialize(RF95_FREQ, RF95_POWER, Range::Short)){
     while (!Serial) { delay(5); }
@@ -101,7 +104,7 @@ void setup() {
   Wire.begin();
   if (!imu.begin())
     state = TransmitterState::LSM9DS1Error;
-  imu.setGyroScale(2000);  
+  imu.setGyroScale(2000);  //Extend range to 2000 deg/s
 
   cutTimer.callback = make_static_lambda(void, (Timer& t), digitalWrite(CutPin, LOW));
 
@@ -131,9 +134,12 @@ void loop() {
 
   if (imu.magAvailable())
     imu.readMag();
+
+  //Update connections & timers	
   Yield();
 }
 
+//Method called when a packet from the Feather Connection Pool is received
 void TxRxRadioConnection::onPacketReceived(PacketInfo& info, IOBuffer &io){
     switch(info.Type){
       case SetTxState: {

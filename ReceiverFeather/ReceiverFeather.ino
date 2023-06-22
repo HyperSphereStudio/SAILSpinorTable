@@ -8,7 +8,7 @@
    --------  ------  -------  ---------------------------------------
    04/12/23   KOO      1.0     Code for basic radio communication of IMU data
    04/24/23   KOO      1.1     Reformatted to allow external Matlab interaction
-   06/12/23   JCB      2.0     New Packet Protocol, 3 Feather Communication & Control, Julia Interface
+   06/12/23   JCB      2.0     3Feather with Medium Level Network Library (Simple) Implementation.
  *********************************************************************/
 
 /*Override std print to divert to Computer
@@ -18,9 +18,9 @@ void serial_print(const char* fmt, ...);
 #define printrx(fmt, ...) print("[Rx]:" fmt, ##__VA_ARGS__)
 #define printrxln(fmt, ...) println("[Rx]:" fmt, ##__VA_ARGS__)
 
-#include <SimpleConnection.h>
-#include <SimpleTimer.h>
-#include <devices/SimpleFeather.h>
+#include <SimpleConnection.hpp>
+#include <SimpleTimer.hpp>
+#include <devices/SimpleFeather.hpp>
 
 #define Retries 5
 #define NodeTimeout 50
@@ -47,23 +47,25 @@ enum Device : uint8_t{
   DeviceCount
 };
 
+//Extension of a serial connection for the computer to handle the packets
 struct RxCompConnection : public SerialConnection{
   void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
   void onPacketCorrupted(PacketInfo& info) final{}
 };
 
+// Implementation of a feather radio connection which provides Time Divison Multiplexor Access and other tools to minimize error & maximize transmission speed
 struct TxRxRadioConnection : public RadioConnection{
   TxRxRadioConnection() : RadioConnection(Rxer, DeviceCount, NodeTimeout, Retries, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){
-    setSyncInterval(1000);
+    setSyncInterval(1000);	//This is important for packet time sync. ONLY THE RX SHOULD SEND SYNC PACKETS!!!!!!!!!!!!!!
   }
   void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
   void onPacketCorrupted(PacketInfo& info) final{}
   bool HandlePacket(PacketInfo &info, IOBuffer &io) override{
     switch(info.Type){
       case ComputerPrint:
-      case AccelerationPacket:
+      case AccelerationPacket:	//This packet is sent way to often and tracking it could create a memory crash for the poor little feather memory :/
       case ControllerRead:
-        return false;  //Dont send a Rx, but also dont mark handled
+        return false;  //Bypass default handler that will generate a Rx Packet, but also dont mark handled
       default:
         return RadioConnection::HandlePacket(info, io);
     }
@@ -90,12 +92,17 @@ void setup() {
   else 
     printrxln("LoRa Radio Init Failed!");
 
+//Listen to the ports
   rx.Start(); 
   computer.Start();  
 }
 
-void loop() { Yield(); }
+void loop() { 
+  //Update connections & timers	
+  Yield();
+}
 
+//Method called when a packet from the computer is received
 void RxCompConnection::onPacketReceived(PacketInfo& info, IOBuffer& io){
   switch(info.Type){
     case PacketType::SetTxState:
@@ -107,6 +114,7 @@ void RxCompConnection::onPacketReceived(PacketInfo& info, IOBuffer& io){
   } 
 }
 
+//Method called when a packet from the Feather Connection Pool is received
 void TxRxRadioConnection::onPacketReceived(PacketInfo& info, IOBuffer &io){
   switch(info.Type){
     case PacketType::ComputerPrint:     //Forward to the computer
