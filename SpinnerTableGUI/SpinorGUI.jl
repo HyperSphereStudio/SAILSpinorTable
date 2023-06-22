@@ -151,7 +151,7 @@ function gui_main()
         notify(gui[:TimeData])
     end
 
-    measureTimer = HTimer(4, .5; start=false) do t 
+    measureTimer = HTimer(1, .5; start=false) do t 
         s = measure(measurementMode[] + 2)
         d = measure(Desired)
         v = motorControl[]

@@ -23,8 +23,7 @@ void serial_print(const char* fmt, ...);
 #include <devices/SimpleFeather.h>
 
 #define Retries 5
-#define RetryTimeOut 50
-#define NodeTimeout 10
+#define NodeTimeout 50
 
 #define RFM95_Slave 8
 #define RFM95_Reset 4
@@ -44,7 +43,8 @@ enum PacketType : uint8_t{
 enum Device : uint8_t{
   Rxer = 0,
   Txer,
-  Ctrlr
+  Ctrlr,
+  DeviceCount
 };
 
 struct RxCompConnection : public SerialConnection{
@@ -53,7 +53,9 @@ struct RxCompConnection : public SerialConnection{
 };
 
 struct TxRxRadioConnection : public RadioConnection{
-  TxRxRadioConnection() : RadioConnection(Rxer, Retries, RetryTimeOut, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
+  TxRxRadioConnection() : RadioConnection(Rxer, DeviceCount, NodeTimeout, Retries, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){
+    setSyncInterval(1000);
+  }
   void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
   void onPacketCorrupted(PacketInfo& info) final{}
   bool HandlePacket(PacketInfo &info, IOBuffer &io) override{
@@ -83,10 +85,6 @@ void setup() {
   Serial.begin(115200);
   while (!Serial) { delay(5); }
 
-  rx.DeviceCount = 3;
-  rx.SyncInterval = 1000;
-  rx.NodeReadTimeOut = NodeTimeout;
-  
   if(rx.Initialize(RF95_FREQ, RF95_POWER, Range::Short))
     printrxln("LoRa Radio Init Ok!");
   else 

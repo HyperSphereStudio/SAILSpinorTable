@@ -18,9 +18,8 @@ void radio_print(const char* fmt, ...);
 #include <SimpleTimer.h>
 #include <devices/SimpleFeather.h>
 
-#define Retries 5
-#define RetryTimeOut 50
-#define NodeTimeout 10
+#define Retries 3
+#define NodeTimeout 50
 
 #include <SPI.h>
 #include <RH_RF95.h>
@@ -42,17 +41,20 @@ enum PacketType : uint8_t{
 enum Device : uint8_t{
   Rxer = 0,
   Txer,
-  Ctrlr
+  Ctrlr,
+  DeviceCount
 };
 
 struct CntrlRxRadioConnection : public RadioConnection{
-  CntrlRxRadioConnection() : RadioConnection(Ctrlr, Retries, RetryTimeOut, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
-    void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
+  CntrlRxRadioConnection() : RadioConnection(Ctrlr, DeviceCount, NodeTimeout, Retries, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
+  void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
   void onPacketCorrupted(PacketInfo& info) final{}
+  bool HandlePacket(PacketInfo &info, IOBuffer &io) override;
 };
 
 CntrlRxRadioConnection cntrl;
 StreamIO controller(Serial1);
+Timer packetTimer(true, 2500);
 
 void radio_print(const char* fmt, ...){
   va_list args;
@@ -71,7 +73,13 @@ void setup() {
     return;
   }
 
+  packetTimer.callback = make_static_lambda(void, (Timer& t), {
+    controller.Write((int8_t) 0xC2, (int8_t) 0);  //Stop
+    printctln("Motor Emergency Stop!");
+  });
+  
   cntrl.Start();
+  packetTimer.Start();
   printctln("LoRa Radio Init Ok");
 }
 
@@ -89,7 +97,11 @@ void CntrlRxRadioConnection::onPacketReceived(PacketInfo& info, IOBuffer& io){
   switch(info.Type){
     case ControllerWrite:
       io.WriteTo(controller, info.Size);    //Forward to the controller
-      printctln("Write!");
       break;
   }
+}
+
+bool CntrlRxRadioConnection::HandlePacket(PacketInfo &info, IOBuffer &io){
+  packetTimer.Reset();
+  return RadioConnection::HandlePacket(info, io);
 }

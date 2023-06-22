@@ -24,8 +24,7 @@ void radio_print(const char* fmt, ...);
 #include <devices/SimpleFeather.h>
 
 #define Retries 3
-#define RetryTimeOut 50
-#define NodeTimeout 10
+#define NodeTimeout 50
 
 // The SFE_LSM9DS1 library requires both Wire and SPI to be
 // included BEFORE including the SparkFunLSM9DS1 library.
@@ -52,7 +51,8 @@ enum PacketType : uint8_t{
 enum Device : uint8_t{
   Rxer = 0,
   Txer,
-  Ctrlr
+  Ctrlr,
+  DeviceCount
 };
 
 enum TransmitterState : byte{
@@ -63,7 +63,7 @@ enum TransmitterState : byte{
 };
 
 struct TxRxRadioConnection : public RadioConnection{
-  TxRxRadioConnection() : RadioConnection(Txer, Retries, RetryTimeOut, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
+  TxRxRadioConnection() : RadioConnection(Txer, DeviceCount, NodeTimeout, Retries, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
   void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
   void onPacketCorrupted(PacketInfo& info) final{}
   bool CanWritePacket(PacketInfo &pi, bool &dispose) override { 
@@ -76,7 +76,7 @@ struct TxRxRadioConnection : public RadioConnection{
 LSM9DS1 imu;
 TxRxRadioConnection tx;
 TransmitterState state = TransmitterState::None;
-Timer packetTimer(true, 250), cutTimer(false, 1000);
+Timer packetTimer(true, 200), cutTimer(false, 1000);
 
 void radio_print(const char* fmt, ...){
   va_list args;
@@ -96,9 +96,6 @@ void setup() {
   }
   delay(100);
   printtxln("LoRa Radio Okay!");
-
-  tx.DeviceCount = 3;
-  tx.NodeReadTimeOut = NodeTimeout;
 
   //With no arguments, this uses default addresses (AG:0x6B, M:0x1E) and i2c port (Wire).
   Wire.begin();
