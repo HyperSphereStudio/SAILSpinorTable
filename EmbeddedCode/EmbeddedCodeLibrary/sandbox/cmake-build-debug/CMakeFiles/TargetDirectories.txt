@@ -1,0 +1,3 @@
+C:/Users/JohnB/OneDrive/School/SAIL/EmbeddedCodeLibrary/sandbox/cmake-build-debug/CMakeFiles/sandbox.dir
+C:/Users/JohnB/OneDrive/School/SAIL/EmbeddedCodeLibrary/sandbox/cmake-build-debug/CMakeFiles/edit_cache.dir
+C:/Users/JohnB/OneDrive/School/SAIL/EmbeddedCodeLibrary/sandbox/cmake-build-debug/CMakeFiles/rebuild_cache.dir

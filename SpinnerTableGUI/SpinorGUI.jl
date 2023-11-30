@@ -4,7 +4,7 @@ using JuliaSAILGUI: DataFrames, Gtk4, Observables, LibSerialPort, CSV, GLMakie
 
 #Adjustable Constants
 const BaudRate = 115200
-const InitMotorSpeed = 75
+const InitMotorSpeed = 50
 const TimeDisplayWindow = 10
 const SampleRate = .25
 const MaxMotorCurrent = 5.0 #A
@@ -158,20 +158,7 @@ function gui_main()
         Gtk4.markup(gui[:Freq], "<b>Measured:$(round(s, digits=3)) Hz</b>")
         measurementMode[] == 1 && return                        #Skip on manual mode
         comp_println("Measured: $s Hz. Desired: $d Hz")
-       
-        current = abs(s - d)
-        last = abs(lastSpeed - d)
-        if current > .05
-            if s > d
-                direction = -1                  #Wont cause motor stalling
-            else
-                direction = lastDirection       #Go up to desired without stalling
-                current > last && (direction *= -1)
-                lastSpeed = s
-            end
-            motorControl[] += direction
-            lastDirection = direction
-        end
+        motorControl[] += cmp(d, s)
     end
 
     function reset()
