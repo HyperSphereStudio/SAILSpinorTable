@@ -1,49 +1,93 @@
-using JuliaSAILGUI
 using Dates
-using JuliaSAILGUI: DataFrames, Gtk4, Observables, LibSerialPort, CSV, GLMakie
+
+using JuliaSAILGUI
+using JuliaSAILGUI: DataFrames, Gtk4, Observables, LibSerialPort, CSV, GLMakie, IOReader
+
+#using .JuliaSAILGUI, .DataFrames, .Gtk4, .Observables, .LibSerialPort, .CSV, .GLMakie, .IOReader
+
 
 #Adjustable Constants
 const BaudRate = 115200
-const InitMotorSpeed = 50
+const InitMotorSpeed = 30
 const TimeDisplayWindow = 10
-const SampleRate = .25
+const SampleRate = .5
 const MaxMotorCurrent = 5.0 #A
 const InitMotorVoltage = 20 #V
 const AverageMeasurementLength = 3
 
 #Packet Types
-const AccelerationPacket = 1
-const ComputerPrint = 2
-const SetTxState = 3
-const ControllerWrite = 4
-const ControllerRead = 5
-const Cut = 6
-
-#Tx States
-const TxReadyIdle::UInt8 = 1
-const TxGetData::UInt8 = 2
-
-#Controller Commands
-const ControllerSetSpeed::UInt8 = 0xC2
+const AccelerationPacket::UInt8 = 1
+const ComputerPrint::UInt8 = 2
+const SetMotorSpeed::UInt8 = 3
+const Cut::UInt8 = 4
 
 RunningTime = now()
 runningtime() = Dates.value(now() - RunningTime) * 1E-3
 comp_println(x...) = println("[Comp]:", x...)
-JuliaSAILGUI.readport(f::Function, s::SimpleConnection) = readport(f, s.port)
-function JuliaSAILGUI.send(s::SimpleConnection, type::Integer, args...)
+
+const MAGIC_NUMBER::UInt32 = 0xDEADBEEF
+const TAIL_MAGIC_NUMBER::UInt8 = 0xEE
+
+mutable struct SimpleConnection2 <: IOReader
+    port::MicroControllerPort
+    write_buffer::IOBuffer
+
+    function SimpleConnection2(port::MicroControllerPort)
+        c = new(port, IOBuffer())
+        port.reader = c
+        c
+    end
+
+    Base.close(c::SimpleConnection2) = close(c.port)
+    Base.isopen(c::SimpleConnection2) = isopen(c.port)
+    Base.print(io::IO, c::SimpleConnection2) = print(io, "Connection[Name=$(c.port.name), Open=$(isopen(c))]")
+    Observables.on(cb::Function, p::SimpleConnection2; update=false) = on(cb, p.port; update=update)
+    Base.setindex!(p::SimpleConnection2, port) = setport(p, port)
+end
+JuliaSAILGUI.setport(s::SimpleConnection2, name) = setport(s.port, name)
+JuliaSAILGUI.readport(f::Function, s::SimpleConnection2) = readport(f, s.port)
+
+function JuliaSAILGUI.send(s::SimpleConnection2, args...)
     s.write_buffer.ptr = 1
     s.write_buffer.size = 0
     writestd(x::T) where T <: Number = write(s.write_buffer, hton(x)) 
     writestd(x) = write(s.write_buffer, x) 
-    writestd(JuliaSAILGUI.MAGIC_NUMBER)
+    writestd(MAGIC_NUMBER)
     writestd(UInt8(sum(sizeof, args)))
-    writestd(UInt8(type))
-    writestd(UInt8(s.packet_count))
     foreach(writestd, args)
-    writestd(JuliaSAILGUI.TAIL_MAGIC_NUMBER)
-    s.packet_count += UInt8(1)
+    writestd(TAIL_MAGIC_NUMBER)
     LibSerialPort.sp_nonblocking_write(s.port.sp.ref, pointer(s.write_buffer.data), s.write_buffer.ptr - 1)
 end
+
+function Base.take!(r::SimpleConnection2, io::IOBuffer)
+    head::UInt32 = 0
+    canread(s::Integer) = bytesavailable(io) >= s
+    canread(::Type{T}) where T = canread(sizeof(T))
+    canread(x) = canread(sizeof(typeof(x)))
+
+    while canread(UInt32) && (head = peekn(io, UInt32)) != MAGIC_NUMBER
+        io.ptr += 1                             
+    end
+
+    mark(io)                                                      #Mark after discardable data
+    if canread(sizeof(MAGIC_NUMBER) + 1) && (readn(io, UInt32) == MAGIC_NUMBER)
+        size = read(io, UInt8)
+        if canread(size + 1)
+            base_pos = io.ptr
+            io.ptr += size
+	   
+            if read(io, UInt8) == TAIL_MAGIC_NUMBER               #Peek ahead to make sure tail is okay
+                return IOBuffer(@view(io.data[base_pos:(base_pos + size - 1)]))
+            else
+                return nothing
+            end
+        end
+    end
+
+    io.ptr = io.mark
+    return nothing
+end
+
 
 function create_plot(df, plot, gui)
     set_theme!(theme_hypersphere())
@@ -138,7 +182,7 @@ function gui_main()
     measurementMode = Observable(0)
     lastDirection = 1
     lastSpeed = 0
-    rx = SimpleConnection(MicroControllerPort(:Reciever, BaudRate, nothing), (h) -> comp_println("Packet Corruption! $(h.Type)"))
+    master = SimpleConnection2(MicroControllerPort(:Reciever, BaudRate, nothing))
     gui = create_gui(df, motorVoltage, motorControl, motorSpeed)
    
     measure(name) = measurements[name]
@@ -151,7 +195,7 @@ function gui_main()
         notify(gui[:TimeData])
     end
 
-    measureTimer = HTimer(1, .5; start=false) do t 
+    measureTimer = HTimer(1, .75; start=false) do t 
         s = measure(measurementMode[] + 2)
         d = measure(Desired)
         v = motorControl[]
@@ -171,21 +215,25 @@ function gui_main()
     
     function start()
         reset()
-        isopen(rx) || return
+        isopen(master) || return
         resume(motorSampleTimer)
         resume(measureTimer)
         lastDirection = 1
         lastSpeed = 0
         motorControl[] = InitMotorSpeed                    
         motorSpeed[] = 1.5
-        send(rx, SetTxState, TxGetData)                             #Send Packets
     end
 
     function stop()
+		println("Stopping...")
         pause(motorSampleTimer)
         pause(measureTimer)
-        isopen(rx) && send(rx, SetTxState, TxReadyIdle)
-        @async(isopen(rx) && send(rx, ControllerWrite, ControllerSetSpeed, UInt8(0)))  #Just in case its missed
+        if isopen(master)
+			for i in 1:3
+				send(master, SetMotorSpeed, UInt8(0))
+				sleep(.01)
+			end
+		end
     end
 
     function save_to_file(file)
@@ -197,16 +245,17 @@ function gui_main()
     atexit(() -> motorControl[] = 0)                                               #Silently turn off table if its still on 
     signal_connect(_ -> exit(0), gui[:Window], :close_request)                     #Kill Program on GUI close
     Observables.ObservablePair(gui[:Instrument], measurementMode)
-    on(rx) do c
+    on(master) do c
         c || (gui[:Port].active = -1)
-        comp_println("Rx Connected: $c")
+        comp_println("Master Connected: $c")
     end
     on(motorControl; priority=1) do v
-        isopen(rx) || (comp_println("Rx Not Connected!"); return)
+        isopen(master) || (comp_println("Master Not Connected!"); return)
         v = round(clamp(v, 0, 126))
         measure!(InputMotorPower, getinputmotorpower())
         comp_println("Set Motor Value $v")
-        send(rx, ControllerWrite, ControllerSetSpeed, UInt8(v))                                        
+		
+		send(master, SetMotorSpeed, UInt8(v))
         motorControl.val = v                                                                            #Set without notification
         v == 0 && stop()
     end
@@ -219,33 +268,32 @@ function gui_main()
         @async begin
             w[] === nothing && return
             comp_println("Rx Port = $(w[])")
-            setport(rx, w[]) && reset()
+            setport(master, w[]) && reset()
         end
     end
     on(_ -> save_dialog(save_to_file, "Save data file as...", nothing, ["*.csv"]), gui[:Save])
     on(_ -> @async(start()), gui[:Play])
     on(_ -> @async(motorSpeed[] = 0), gui[:Stop])
-    on(_ -> @async(close(rx)), gui[:Disconnect])
+    on(_ -> @async(close(master)), gui[:Disconnect])
     on(gui[:Release]) do w
         comp_println("Releasing!")
-        @async(send(rx, Cut))
+        @async(send(master, Cut))
     end
     on(PortsObservable; update=true) do pl
-        isopen(rx) && return
+        isopen(master) && return
         empty!(gui[:Port])
         append!(gui[:Port], pl)
     end                                                   
     while true #GUI Loop
         try
-            isopen(rx) && readport(rx) do (h, io)
-                if h.Type == AccelerationPacket
-                    Gx, Gy, Gz, Ax, Ay, Az, Mx, My, Mz = readn(io, Float32, 9)
-                    Gx_Hz, Gy_Hz, Gz_Hz = (Gx, Gy, Gz) ./ 360
+            isopen(master) && readport(master) do io
+				id = read(io, UInt8)
+                if id == AccelerationPacket
+                    Gz = readn(io, Float32)
+                    Gz_Hz = Gz ./ 360
                     measure!(Gyro, Gz_Hz)
-                elseif h.Type == ComputerPrint
+                elseif id == ComputerPrint
                     print(read(io, String))
-                elseif h.Type == ControllerRead
-                    println("Controller Read!")
                 else
                     println("Invalid Packet!")
                 end
@@ -253,7 +301,7 @@ function gui_main()
         catch e
             showerror(stdout, e)
         end    
-        sleep(1E-2)
+        sleep(1E-3)
     end
 end
 

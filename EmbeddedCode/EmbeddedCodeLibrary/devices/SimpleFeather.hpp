@@ -19,7 +19,6 @@
 #include <RH_RF95.h>
 
 namespace Simple{
-
     enum Range{
         Short,
         Medium,
@@ -27,19 +26,29 @@ namespace Simple{
         UltraLong
     };
 
-    struct PacketHeader{
+    struct RadioPacket : public Packet{
         uint8_t to = 0, from = 0, id = 0;
 
-        PacketHeader(uint8_t to = 0, uint8_t from = 0, uint8_t id = 0) : to(to), from(from), id(id){}
+        RadioPacket(int capacity) : Packet(capacity){}
+
+        void config(int To, int Type, bool reset = true){
+            to = To;
+            id = Type;
+            Packet::config(reset);
+        }
     };
 
     /**Wrapper of the radio to an IO **/
-    class RadioIO : public Connection{
+    class RadioConnection : public Connection{
     protected:
         RH_RF95 rf95;
         const uint8_t resetPin;
+
     public:
-        RadioIO(uint8_t slaveSelectPin, uint8_t interruptPin, uint8_t resetPin) : rf95(slaveSelectPin, interruptPin), resetPin(resetPin){
+        RadioPacket buffer;
+
+        RadioConnection(uint8_t slaveSelectPin, uint8_t interruptPin, uint8_t resetPin, int buffer) :
+            rf95(slaveSelectPin, interruptPin), resetPin(resetPin), buffer(RH_RF95_MAX_MESSAGE_LEN){
             pinMode(resetPin, OUTPUT);
             digitalWrite(resetPin, HIGH);
         }
@@ -77,42 +86,33 @@ namespace Simple{
             return true;
         }
 
-        void Send(IOBuffer* io) override{
-            rf95.send(io->Interpret(), io->Size());
+        void Send(Packet* p) override{
+            rf95.setHeaderTo(((RadioPacket*) p)->to);
+            rf95.setHeaderId(((RadioPacket*) p)->id);
+            Write(p);
         }
 
-        void Send(IOBuffer* io, PacketHeader header){
-            rf95.setHeaderTo(header.to);
-            rf95.setHeaderId(header.id);
-            rf95.setHeaderFrom(header.from);
-            Send(io);
+        void Write(IO* in) final {
+            buffer.SeekStart();
+            rf95.send(buffer.Interpret(0), buffer.ReadFrom(*in));
         }
 
-        void Write(IOBuffer* io) override {
-            uint8_t buffer[RH_RF95_MAX_MESSAGE_LEN];
-            int read;
-            while((read = io->ReadBytesUnlocked(buffer, RH_RF95_MAX_MESSAGE_LEN)) > 0){
-                rf95.send(buffer, read)
-            }
-        }
-
-        void Update(){
+        TaskReturn Fire() override{
             if(rf95.available()){
-                IOBuffer io(RH_RF95_MAX_MESSAGE_LEN);
                 uint8_t len = RH_RF95_MAX_MESSAGE_LEN;
-                rf95.recv(io.Interpret(0), &len);
-                io.SetSize(len);
-                PacketHeader header;
-                header.to = rf95.headerTo();
-                header.from = rf95.headerFrom();
-                header.id = rf95.headerId();
-                Receive(io, header);
+                rf95.recv(buffer.Interpret(0), &len);
+                buffer.SetSize(len);
+                buffer.from = rf95.headerFrom();
+                buffer.id = rf95.headerId();
+                buffer.SeekStart();
+                Receive(&buffer);
+                buffer.SetSize(RH_RF95_MAX_MESSAGE_LEN);
             }
+            return TaskReturn::Nothing;
         }
-
-        void Receive(IOBuffer* io) final {}
-        virtual void Receive(IOBuffer* io, PacketHeader header) = 0;
         void SetAddress(int id){ rf95.setThisAddress(id); }
+        void Receive(Packet* p) final { Receive((RadioPacket*) p); }
+        virtual void Receive(RadioPacket* rp) = 0;
     };
 }
 #endif

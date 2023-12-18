@@ -108,7 +108,7 @@ namespace Simple{
 /**Create a locally allocated capturing lambda
  * Use it like this
  *  //DO NOT LET your_local_name GO OUT OF SCOPE when you invoke the lambda!!!!!!!!!!!
- *  define_local_lambda(your_local_name, [], void, (IOBuffer& io), io.PrintfEnd("Hello From Timer!"```));
+ *  define_local_lambda(your_local_name, [], void, (IOArray& io), io.PrintfEnd("Hello From Timer!"```));
  *  your_local_name(my_io); //Invoke the lamdba here :) **/
 #define make_local_lambda(local_name, capture_type, ret, args, ...)               \
         auto CAT(__lambda, __LINE__) = capture_type args -> ret { __VA_ARGS__; };  \
@@ -116,7 +116,7 @@ namespace Simple{
 
 /**Create a heap allocated capturing lambda
  * Use it like this
- *  define_global_lambda(your_global_name, [], void, (IOBuffer& io), io.PrintfEnd("Hello From Timer!"```));
+ *  define_global_lambda(your_global_name, [], void, (IOArray& io), io.PrintfEnd("Hello From Timer!"```));
  *  your_global_name(my_io); //Invoke the lamdba here :) **/
 #define make_global_lambda(capture_type, ret, args, ...) GlobalLambda<ret args>(capture_type args -> ret { __VA_ARGS__; })
 /**Create a statically allocated capturing lambda

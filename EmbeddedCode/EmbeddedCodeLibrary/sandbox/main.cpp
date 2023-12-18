@@ -9,18 +9,24 @@ using namespace Simple;
 
 struct TestConnection : public SimpleConnection{
     TestConnection* s;
+    Packet p;
 
-    void Write(IOBuffer* io) override{
-        IOBuffer randomJunk;
-        randomJunk.Write(3);
+    explicit TestConnection() : p(), s(){}
+
+    void Write(IO* io) override{
+        p.config(true);
+     /*   randomJunk.Write(3);
         randomJunk.Write(4);
-        s->Receive(&randomJunk);
+        randomJunk.SeekStart();
+        s->Simple::Connection::Receive(&randomJunk); */
 
-        s->Receive((IOBuffer*) io);
+        p.ReadFrom(*io);
+        p.SeekStart();
+        s->Receive(&p);
     }
 
-    void ReceivedMessage(IOBuffer* io, int size) override {
-        println("Rx Msg: %u", io->Read<uint16_t>());
+    void ReceivedMessage(Packet* rx) override {
+        println("Rx Msg: %u Pos:%i Cap:%i Size:%i", rx->Read<uint16_t>(), rx->Position(), rx->Capacity(), rx->BytesAvailable());
     }
 };
 
@@ -30,13 +36,16 @@ void test_connection(){
     c1.s = &c2;
     c2.s = &c1;
 
-    IOBuffer io;
-    io.Write<uint16_t>(31313);
-    io.SeekStart();
+    Packet p;
+    p.Write<uint16_t>(31313);
 
     for(int i = 0; i < 10; i++){
-        c1.Send(&io);
-        io.SeekStart();
+        p.SeekStart();
+        c1.Send(&p);
+    }
+
+    while(true){
+        Yield();
     }
 }
 
@@ -75,7 +84,7 @@ void test_io() {
     Out.Read(&c);
     println("Read Value: %c", c);
 
-    IOBuffer io, rio;
+    IOArray io, rio;
     io.WriteStd(iV);
     io.WriteStd(dV);
     io.WriteStd(fV);
@@ -87,6 +96,9 @@ void test_io() {
     io.Printf("Test %i\n\r", 2);
 
     io.SeekStart();
+    io.InsertRange(0, 2);
+    io.ReadStd<uint16_t>();
+
     assert(io.ReadStd<long>() == iV, "Long Serialization Fail!");
     assert(io.ReadStd<double>() == dV, "Double Serialization Fail!");
     assert(io.ReadStd<float>() == fV, "Float Serialization Fail!");

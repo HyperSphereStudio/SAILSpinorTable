@@ -15,33 +15,33 @@
   Put this before the feather lib so that we can read errors from device */
 void serial_print(const char* fmt, ...);
 #define print(fmt, ...) serial_print(fmt, ##__VA_ARGS__)
-#define printrx(fmt, ...) print("[Rx]:" fmt, ##__VA_ARGS__)
-#define printrxln(fmt, ...) println("[Rx]:" fmt, ##__VA_ARGS__)
+#define printms(fmt, ...) print("[Master]:" fmt, ##__VA_ARGS__)
+#define printmsln(fmt, ...) println("[Master]:" fmt, ##__VA_ARGS__)
 
 #include <SimpleConnection.hpp>
 #include <SimpleTimer.hpp>
 #include <devices/SimpleFeather.hpp>
 
+#include <SPI.h>
+#include <RH_RF95.h>
 #define RFM95_Slave 8
 #define RFM95_Reset 4
 #define RFM95_Interrupt 3
 #define RF95_FREQ 933.0
 #define RF95_POWER 21
+#define TxFreq 50 //ms
 
 enum PacketType : uint8_t{
   AccelerationPacket = 1,
   ComputerPrint,
   SetMotorSpeed,
-  Cut
+  Cut,
+  Heartbeat
 };
 
 enum Device : uint8_t{
-/*  Rxer = 0,
-  Txer,
-  Ctrlr
-*/
   Master = 0,
-  Txer  
+  Txer
 };
 
 struct SimpleComputerPacket : public Packet{
@@ -56,11 +56,11 @@ struct SimpleComputerPacket : public Packet{
   }
 };
 
-struct RxCompConnection;
+struct MasterCompConnection;
 
-struct RxSimpleCompConnection : public SimpleConnection{
-    RxCompConnection* rxc;
-    RxSimpleCompConnection(RxCompConnection* c) : rxc(c){}
+struct MasterSimpleCompConnection : public SimpleConnection{
+    MasterCompConnection* msc;
+    MasterSimpleCompConnection(MasterCompConnection* c) : msc(c){}
 
     void ReceivedMessage(Packet* io) final;
 
@@ -69,12 +69,12 @@ struct RxSimpleCompConnection : public SimpleConnection{
 };
 
 //Extension of a serial connection for the computer to handle the packets
-struct RxCompConnection : public SerialConnection{
-  friend RxSimpleCompConnection;
+struct MasterCompConnection : public SerialConnection{
+  friend MasterSimpleCompConnection;
   
-  RxSimpleCompConnection sc;
+  MasterSimpleCompConnection sc;
 
-  RxCompConnection() : sc(this), SerialConnection(256) {}
+  MasterCompConnection() : sc(this), SerialConnection(256) {}
 
   void SendPacket(SimpleComputerPacket* p){
     p->InsertRange(0, 1);
@@ -88,27 +88,47 @@ struct RxCompConnection : public SerialConnection{
   }
 };
 
-Timer heartBeat(true, 2000);    //Used to prevent motor from turning off from losing connection
-
 //Implementation of a feather radio connection
-struct RxRxRadioConnection : public RadioConnection{
-  RxRxRadioConnection() : RadioConnection(RFM95_Slave, RFM95_Interrupt, RFM95_Reset, 256) { SetAddress(Rxer); }
+struct MasterRadioConnection : public RadioConnection{
 
-  void SendPacket(RadioPacket* p){
-    if(p->to == Ctrlr)
-      heartBeat.Reset();
+  MasterRadioConnection() : RadioConnection(RFM95_Slave, RFM95_Interrupt, RFM95_Reset, 256) { SetAddress(Master); }
 
-    p->SeekStart();
-    Send(p);
-  }
+    void SendPacket(RadioPacket* p){
+      p->SeekStart();
+      Send(p);
+    }
 
   void Receive(RadioPacket* io) final;
 };
 
-RxCompConnection computer;
-RxRxRadioConnection rx;
+MasterCompConnection computer;
+MasterRadioConnection ms;
 SimpleComputerPacket scp1 = SimpleComputerPacket(256);
+MasterRadioConnection cntrl;
+StreamIO controller(Serial1);	                          //Stream Wrapper over the Controller UART
 RadioPacket rp1 = RadioPacket(256);
+
+void setup() {
+  Serial.begin(115200); //Serial baud
+  Serial1.begin(19200); //Controller baud
+
+  while (!Serial) { delay(5); }
+  printmsln("Connected!");
+
+  if(!ms.Initialize(RF95_FREQ, RF95_POWER, Range::Medium)){
+    Serial.printf("LoRa Radio Initialization Failed!");
+    return;
+  }
+
+  //Listen to the ports
+  ms.Start(); 
+  computer.Start(); 
+  printmsln("Setup Okay!");
+}
+
+void loop() {
+  Yield();            //Update connections & timers	
+}
 
 void serial_print(const char* fmt, ...){
   va_list args;
@@ -121,52 +141,30 @@ void serial_print(const char* fmt, ...){
   va_end(args);
 }
 
-void setup() {
-  Serial.begin(115200);
-  while (!Serial) { delay(5); }
-  printrxln("Connected!");
+void MasterSimpleCompConnection::Write(IO* io){ msc->Write(io); }
 
-  if(rx.Initialize(RF95_FREQ, RF95_POWER, Range::Medium))
-    printrxln("LoRa Radio Init Ok!");
-  else 
-    printrxln("LoRa Radio Init Failed!");
-
- heartBeat.callback = make_static_lambda(void, (Timer& t), {
-    rp1.config(Ctrlr, PacketType::Heartbeat);
-    rx.SendPacket(&rp1);
-    printrxln("Heartbeat");
-  });
-
-//Listen to the ports
-  rx.Start(); 
-  computer.Start(); 
-  heartBeat.Start();	//Start the timer
-
-  printrxln("Setup Okay!");
+void set_motor_speed(uint8_t speed){
+  controller.Write((uint8_t) 0xC2, speed);
 }
 
-void loop() { 
-  Yield();            //Update connections & timers	
+void stop_motor(){
+  set_motor_speed(0);
 }
-
-void RxSimpleCompConnection::Write(IO* io){ rxc->Write(io); }
 
 //Method called when a packet from the computer is received
-void RxSimpleCompConnection::ReceivedMessage(Packet* p){
+void MasterSimpleCompConnection::ReceivedMessage(Packet* p){
   auto id = p->ReadByte();
   switch(id){
-    case PacketType::CntrlSetMotorSpeed:{
-	    rp1.config(Ctrlr, PacketType::CntrlSetMotorSpeed);
-		  rp1.ReadFrom(*p);
-		  rx.SendPacket(&rp1);
-		  printrxln("Set Motor Speed!");
+    case PacketType::SetMotorSpeed:{
+      set_motor_speed(p->Read<uint8_t>());
+		  printmsln("Set Motor Speed!");
       break;
     }
   } 
 }
 
 //Method called when a packet from the Feather Connection Pool is received
-void RxRxRadioConnection::Receive(RadioPacket* p) {
+void MasterRadioConnection::Receive(RadioPacket* p) {
   switch(p->id){
     case PacketType::ComputerPrint:     //Forward to the computer
     case PacketType::AccelerationPacket:

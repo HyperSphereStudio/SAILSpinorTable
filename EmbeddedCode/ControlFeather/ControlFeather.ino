@@ -9,6 +9,10 @@
 
 /*Override std print to divert to computer
   Put this before the feather lib so that we can read errors from device code*/
+
+//Uncomment to enter debug mode
+//#define DEBUG
+
 void radio_print(const char* fmt, ...);
 #define print(fmt, ...) radio_print(fmt, ##__VA_ARGS__)
 #define printct(fmt, ...) print("[Cntrl]:" fmt, ##__VA_ARGS__)
@@ -18,67 +22,80 @@ void radio_print(const char* fmt, ...);
 #include <SimpleTimer.hpp>
 #include <devices/SimpleFeather.hpp>
 
-#define Retries 3
-#define NodeTimeout 50
-
 #include <SPI.h>
 #include <RH_RF95.h>
 #define RFM95_Slave 8
 #define RFM95_Reset 4
 #define RFM95_Interrupt 3
-#define RF95_FREQ 915.0
-#define RF95_POWER 23
+#define RF95_FREQ 933.0
+#define RF95_POWER 21
+#define TxFreq 50 //ms
 
 enum PacketType : uint8_t{
   AccelerationPacket = 1,
   ComputerPrint,
-  SetTxState,
-  ControllerWrite,
-  ControllerRead,
+  SetMotorSpeed,
   Cut
 };
 
 enum Device : uint8_t{
-  Rxer = 0,
+/*  Rxer = 0,
   Txer,
-  Ctrlr,
-  DeviceCount
+  Ctrlr
+*/
+  Master = 0,
+  Txer  
 };
 
 
-// Implementation of a feather radio connection which provides Time Divison Multiplexor Access and other tools to minimize error & maximize transmission speed
+//Implementation of a feather radio connection
 struct CntrlRxRadioConnection : public RadioConnection{
-  CntrlRxRadioConnection() : RadioConnection(Ctrlr, DeviceCount, NodeTimeout, Retries, RFM95_Slave, RFM95_Interrupt, RFM95_Reset){}
-  void onPacketReceived(PacketInfo& info, IOBuffer& io) final;
-  void onPacketCorrupted(PacketInfo& info) final{}
-  bool HandlePacket(PacketInfo &info, IOBuffer &io) final;
+
+  CntrlRxRadioConnection() : RadioConnection(RFM95_Slave, RFM95_Interrupt, RFM95_Reset, 256) { SetAddress(Ctrlr); }
+
+    void SendPacket(RadioPacket* p){
+      p->SeekStart();
+      Send(p);
+    }
+
+  void Receive(RadioPacket* io) final;
 };
 
 CntrlRxRadioConnection cntrl;
 StreamIO controller(Serial1);	//Stream Wrapper over the Controller UART
 
-//Used to control the motor if the Rx loses connection. Itll automatically stop the motor after 2.5 s
-Timer packetTimer(true, 2500);
+//Used to control the motor if the Rx loses connection. Itll automatically stop the motor after 5 s
+Timer packetTimer(true, 5000);
+
+RadioPacket rp1 = RadioPacket(256);
 
 //Simple::Printf implementation stream to Rx
 void radio_print(const char* fmt, ...){
   va_list args;
   va_start(args, fmt);
-  define_local_lambda(lam, capture(=, &args), void, (IOBuffer& io), io.vPrintf((char*) fmt, args));
-  cntrl.SendData(Rxer, PacketType::ComputerPrint, lam);
+
+  rp1.config(Rxer, PacketType::ComputerPrint);
+  rp1.vPrintf((char*) fmt, args);
+  cntrl.SendPacket(&rp1);
+
   va_end(args);
 }
 
+void set_motor_speed(uint8_t speed){
+  controller.Write((uint8_t) 0xC2, speed);
+}
+
 void stop_motor(){
-	controller.Write((int8_t) 0xC2, (int8_t) 0);
+  set_motor_speed(0);
 }
 
 void setup() {
   //The controller is connected to Serial1
   Serial1.begin(19200); //Controller baud
+
+  debugOnly( while (!Serial) { delay(5); } )
    
-  if(!cntrl.Initialize(RF95_FREQ, RF95_POWER, Range::Short)){
-    while (!Serial) { delay(5); }
+  if(!cntrl.Initialize(RF95_FREQ, RF95_POWER, Range::Medium)){
     Serial.printf("LoRa Radio Initialization Failed!");
     return;
   }
@@ -97,7 +114,7 @@ void setup() {
 void loop() {
   //Update connections & timers	
   Yield();
-  
+
   /*if(controller.BytesAvailable() > 0){
     cntrl.SendData(ControllerRead, lambda(void, (IOBuffer& io), {
       while(controller.BytesAvailable() > 0)
@@ -107,15 +124,11 @@ void loop() {
 }
 
 //Method called when a packet from the Feather Connection Pool is received
-void CntrlRxRadioConnection::onPacketReceived(PacketInfo& info, IOBuffer& io){
-  switch(info.Type){
-    case ControllerWrite:
-      io.WriteTo(controller, info.Size);    //Forward commands from the Rx to the controller
+void CntrlRxRadioConnection::Receive(RadioPacket* p) {
+  packetTimer.Reset();
+  switch(p->id){
+    case CntrlSetMotorSpeed:
+      set_motor_speed(p->Read<uint8_t>());
       break;
   }
-}
-
-bool CntrlRxRadioConnection::HandlePacket(PacketInfo &info, IOBuffer &io){
-  packetTimer.Reset();
-  return RadioConnection::HandlePacket(info, io);	//Let the default packet handler figure out how to handle internal packets
 }
